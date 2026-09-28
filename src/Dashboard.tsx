@@ -224,7 +224,7 @@ export default function Dashboard({
       <div className="page-footer">
         <span>Λιγότερο ψάξιμο. Περισσότερη δημιουργία.</span>
         <span>
-          Promo Desk <span className="footer-dot">●</span> Ο δικός σου χώρος
+          WebTag <span className="footer-dot">●</span> Ο δικός σου χώρος
           οργάνωσης
         </span>
       </div>

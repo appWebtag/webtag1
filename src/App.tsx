@@ -78,12 +78,10 @@ const navigation = [
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-mark">
-        p<span />
-      </span>
+      <img className="brand-mark" src="/logo.png" alt="" width="44" height="44" />
       <span>
-        promo<span className="brand-light">desk</span>
-        <small>SOCIAL, ΣΕ ΤΑΞΗ.</small>
+        WebTag
+        <small>Net Solutions</small>
       </span>
     </div>
   );
@@ -117,6 +115,7 @@ function Auth() {
   }
   return (
     <div className="auth-page">
+      <div className="auth-banner" role="img" aria-label="WebTag Net Solutions" />
       <div className="auth-card">
         <Brand />
         <div className="eyebrow">Ο ΔΙΚΟΣ ΣΟΥ ΧΩΡΟΣ</div>
@@ -386,7 +385,7 @@ export default function App() {
         context.registerTool(
           {
             name: "show_promo_desk_view",
-            title: "Άνοιγμα οθόνης Promo Desk",
+            title: "Άνοιγμα οθόνης WebTag",
             description:
               "Open one of the existing app views. Navigates only; does not create, modify, publish, or delete records.",
             inputSchema: {
