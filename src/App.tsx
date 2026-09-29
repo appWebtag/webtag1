@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  Tags,
   UserRound,
   Users,
 } from "lucide-react";
@@ -30,7 +31,17 @@ import type { Session } from "@supabase/supabase-js";
 import Dashboard from "./Dashboard";
 import Schedule from "./Schedule";
 import { BusinessForm, Modal, PromotionForm } from "./forms";
-import { Avatar, Badge, ChannelPill, Empty, PromotionTable } from "./ui";
+import {
+  Avatar,
+  Badge,
+  CategoryChips,
+  ChannelPill,
+  Empty,
+  KindPill,
+  LabelContext,
+  PromotionTable,
+} from "./ui";
+import { CategoryManager, FiltersBar } from "./Filters";
 import { demoData, demoMeta } from "./demo";
 import MetaView from "./MetaView";
 import { BusinessMetaComparison, PromotionMetaPanel } from "./MetaPanels";
@@ -52,16 +63,27 @@ import {
   replacement,
   todayISO,
   validatePromotion,
+  applyFilters,
+  categoryIds,
+  categoryNames,
+  emptyFilters,
+  formatCost,
+  promotionLabel,
   type Business,
+  type Category,
   type Data,
   type Promotion,
+  type PromotionFilters,
 } from "./domain";
 import {
   demoMode,
   friendlyError,
   loadData,
+  deleteCategory,
   saveBusiness,
+  saveCategory,
   savePromotion,
+  setPromotionCategories,
   supabase,
 } from "./data";
 
@@ -81,13 +103,14 @@ type Popup =
       businessId?: string;
     }
   | { type: "promotion"; id: string }
+  | { type: "categories" }
   | {
       type: "confirm";
       promotion: Promotion;
       action: "publish" | "complete" | "cancel";
     }
   | null;
-const emptyData: Data = { businesses: [], promotions: [] };
+const emptyData: Data = { businesses: [], promotions: [], categories: [], categoryLinks: [] };
 const navigation = [
   { id: "overview" as const, title: "Επισκόπηση", Icon: LayoutDashboard },
   { id: "businesses" as const, title: "Επιχειρήσεις", Icon: Users },
@@ -191,6 +214,7 @@ export default function App() {
   const [selectedBusiness, setSelectedBusiness] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [filters, setFilters] = useState<PromotionFilters>(emptyFilters);
   const [popup, setPopup] = useState<Popup>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -314,6 +338,7 @@ export default function App() {
     setView(next);
     setSearch("");
     setFilter("all");
+    setFilters(emptyFilters);
     setMobileOpen(false);
     window.scrollTo({ top: 0, behavior: "instant" });
   }, []);
@@ -366,7 +391,7 @@ export default function App() {
       throw new Error(friendlyError(e));
     }
   };
-  const persistPromotion = async (p: Promotion) => {
+  const persistPromotion = async (p: Promotion, cats?: string[]) => {
     const expectedUser = userId;
     if (!expectedUser) throw new Error("Συνδέσου ξανά για να αποθηκεύσεις.");
     const issue = validatePromotion(p, today);
@@ -389,13 +414,57 @@ export default function App() {
             { ...p, user_id: expectedUser },
             data.promotions.some((x) => x.id === p.id),
           );
+      if (cats && !demoMode) await setPromotionCategories(saved.id, cats);
       if (userRef.current !== expectedUser) return;
+      const normalized = { ...saved, cost: saved.cost === null ? null : Number(saved.cost) };
       setData((d) => ({
         ...d,
-        promotions: [...d.promotions.filter((x) => x.id !== saved.id), saved],
+        promotions: [...d.promotions.filter((x) => x.id !== saved.id), normalized],
+        categoryLinks: cats
+          ? [
+              ...d.categoryLinks.filter((l) => l.promotion_id !== saved.id),
+              ...cats.map((category_id) => ({ promotion_id: saved.id, category_id })),
+            ]
+          : d.categoryLinks,
       }));
       setPopup(null);
-      setToast("Η προώθηση αποθηκεύτηκε.");
+      setToast(
+        !data.promotions.some((x) => x.id === p.id) && p.kind === "post"
+          ? "Το post καταχωρίστηκε ως ολοκληρωμένο."
+          : "Η προώθηση αποθηκεύτηκε.",
+      );
+    } catch (e) {
+      throw new Error(friendlyError(e));
+    }
+  };
+  const createCategory = async (name: string): Promise<Category> => {
+    if (!userId) throw new Error("Συνδέσου ξανά.");
+    const draft: Category = { id: crypto.randomUUID(), user_id: userId, name, created_at: new Date().toISOString() };
+    try {
+      const saved = demoMode ? draft : await saveCategory(draft, false);
+      setData((d) => ({ ...d, categories: [...d.categories, saved] }));
+      return saved;
+    } catch (e) {
+      throw new Error(friendlyError(e));
+    }
+  };
+  const renameCategory = async (c: Category, name: string) => {
+    try {
+      const saved = demoMode ? { ...c, name } : await saveCategory({ ...c, name }, true);
+      setData((d) => ({ ...d, categories: d.categories.map((x) => (x.id === c.id ? saved : x)) }));
+    } catch (e) {
+      throw new Error(friendlyError(e));
+    }
+  };
+  const removeCategory = async (c: Category) => {
+    try {
+      if (!demoMode) await deleteCategory(c.id, c.user_id);
+      setData((d) => ({
+        ...d,
+        categories: d.categories.filter((x) => x.id !== c.id),
+        categoryLinks: d.categoryLinks.filter((l) => l.category_id !== c.id),
+      }));
+      setFilters((f) => ({ ...f, categories: f.categories.filter((x) => x !== c.id) }));
     } catch (e) {
       throw new Error(friendlyError(e));
     }
@@ -510,12 +579,12 @@ export default function App() {
   const businessPromotions = data.promotions
     .filter((p) => p.business_id === selectedBusiness)
     .sort((a, b) => b.starts_on.localeCompare(a.starts_on));
-  const promotions = data.promotions
+  const promotions = applyFilters(data.promotions, filters, data.categoryLinks)
     .filter(
       (p) =>
         (filter === "all" || phase(p, today) === filter) &&
         matches(
-          `${p.title} ${data.businesses.find((b) => b.id === p.business_id)?.name} ${p.channel}`,
+          `${promotionLabel(p, data)} ${p.title} ${data.businesses.find((b) => b.id === p.business_id)?.name} ${p.channel} ${p.kind}`,
           search,
         ),
     )
@@ -529,7 +598,12 @@ export default function App() {
     view === "business"
       ? activeBusiness?.name || "Επιχείρηση"
       : navigation.find((n) => n.id === view)?.title;
+  const labels = {
+    label: (p: Promotion) => promotionLabel(p, data),
+    categories: (p: Promotion) => categoryNames(p.id, data),
+  };
   return (
+    <LabelContext.Provider value={labels}>
     <div className="app-shell">
       {mobileOpen && (
         <button
@@ -764,20 +838,36 @@ export default function App() {
                       </h1>
                       <p>Όσες τρέχουν, όσες έρχονται και όσες ολοκληρώθηκαν.</p>
                     </div>
-                    <button
-                      className="button primary"
-                      onClick={() => newPromotion()}
-                    >
-                      <Plus size={18} />
-                      Νέα προώθηση
-                    </button>
+                    <div className="inline-actions">
+                      <button
+                        className="button secondary"
+                        onClick={() => setPopup({ type: "categories" })}
+                      >
+                        <Tags size={16} />
+                        Κατηγορίες
+                      </button>
+                      <button
+                        className="button primary"
+                        onClick={() => newPromotion()}
+                      >
+                        <Plus size={18} />
+                        Νέα προώθηση
+                      </button>
+                    </div>
                   </div>
+                  <FiltersBar
+                    filters={filters}
+                    onChange={setFilters}
+                    categories={data.categories}
+                    businesses={data.businesses}
+                    shown={promotions}
+                  />
                   <div className="toolbar">
                     <label className="search-box">
                       <Search size={17} />
                       <input
                         aria-label="Αναζήτηση προώθησης"
-                        placeholder="Αναζήτηση τίτλου, επιχείρησης ή καναλιού…"
+                        placeholder="Αναζήτηση κατηγορίας, επιχείρησης ή καναλιού…"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                       />
@@ -990,9 +1080,24 @@ export default function App() {
           previous={popup.previous}
           businessId={popup.businessId}
           businesses={data.businesses}
+          categories={data.categories}
+          initialCategories={categoryIds(
+            popup.initial?.id || popup.previous?.id || "",
+            data.categoryLinks,
+          )}
           userId={userId!}
           today={today}
           onSave={persistPromotion}
+          onCreateCategory={createCategory}
+          onClose={() => setPopup(null)}
+        />
+      )}
+      {popup?.type === "categories" && (
+        <CategoryManager
+          categories={data.categories}
+          links={data.categoryLinks}
+          onRename={renameCategory}
+          onDelete={removeCategory}
           onClose={() => setPopup(null)}
         />
       )}
@@ -1005,17 +1110,29 @@ export default function App() {
           onClose={() => setPopup(null)}
           wide
         >
-          <ChannelPill channel={current.channel} />
-          <h3 className="promotion-title">{current.title}</h3>
+          <div className="channel-cell">
+            <KindPill kind={current.kind} />
+            <ChannelPill channel={current.channel} />
+          </div>
+          <h3 className="promotion-title">{promotionLabel(current, data)}</h3>
+          <CategoryChips names={categoryNames(current.id, data)} />
           <Badge promotion={current} today={today} />
           <dl className="promotion-meta">
+            {current.kind === "ads" && (
+              <>
+                <div>
+                  <dt>Έναρξη προβολής</dt>
+                  <dd>{dateLabel(current.starts_on, true)}</dd>
+                </div>
+                <div>
+                  <dt>Λήξη προβολής</dt>
+                  <dd>{dateLabel(current.ends_on, true)}</dd>
+                </div>
+              </>
+            )}
             <div>
-              <dt>Έναρξη προβολής</dt>
-              <dd>{dateLabel(current.starts_on, true)}</dd>
-            </div>
-            <div>
-              <dt>Λήξη προβολής</dt>
-              <dd>{dateLabel(current.ends_on, true)}</dd>
+              <dt>Κόστος διαφήμισης</dt>
+              <dd>{formatCost(current.cost)}</dd>
             </div>
             <div>
               <dt>Δημοσιεύτηκε</dt>
@@ -1157,7 +1274,7 @@ export default function App() {
         >
           <p className="modal-lead">
             {popup.action === "publish"
-              ? `Η προώθηση «${popup.promotion.title}» θα καταγραφεί ως δημοσιευμένη σήμερα, ${dateLabel(today, true)}. Για άλλη ημερομηνία χρησιμοποίησε την επεξεργασία.`
+              ? `Η προώθηση «${promotionLabel(popup.promotion, data)}» θα καταγραφεί ως δημοσιευμένη σήμερα, ${dateLabel(today, true)}. Για άλλη ημερομηνία χρησιμοποίησε την επεξεργασία.`
               : popup.action === "complete"
                 ? "Η προώθηση θα μεταφερθεί στις ολοκληρωμένες. Το ιστορικό και τυχόν επόμενη ενέργεια θα παραμείνουν."
                 : "Η προώθηση θα παραμείνει στο ιστορικό ως ακυρωμένη και οι εκκρεμείς ενέργειές της θα αφαιρεθούν."}
@@ -1198,5 +1315,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </LabelContext.Provider>
   );
 }

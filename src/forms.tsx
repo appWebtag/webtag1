@@ -5,13 +5,16 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { X } from "lucide-react";
+import { Check, Plus, X } from "lucide-react";
 import {
   addDays,
   channels,
   validatePromotion,
+  kindLabels,
   type Business,
+  type Category,
   type Promotion,
+  type PromotionKind,
   type PromotionStatus,
   type Channel,
 } from "./domain";
@@ -200,23 +203,107 @@ export function BusinessForm({
     </Modal>
   );
 }
+export function CategoryPicker({
+  categories,
+  selected,
+  onToggle,
+  onCreate,
+}: {
+  categories: Category[];
+  selected: string[];
+  onToggle: (id: string) => void;
+  onCreate: (name: string) => Promise<Category>;
+}) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const add = async () => {
+    const clean = name.trim().replace(/\s+/g, " ");
+    if (!clean || busy) return;
+    const existing = categories.find(
+      (c) => c.name.trim().toLocaleLowerCase("el") === clean.toLocaleLowerCase("el"),
+    );
+    setError("");
+    if (existing) {
+      if (!selected.includes(existing.id)) onToggle(existing.id);
+      setName("");
+      return;
+    }
+    setBusy(true);
+    try {
+      const created = await onCreate(clean);
+      onToggle(created.id);
+      setName("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sorted = [...categories].sort((a, b) => a.name.localeCompare(b.name, "el"));
+  return (
+    <div className="category-picker">
+      <div className="chip-list" role="group" aria-label="Κατηγορίες">
+        {sorted.map((c) => (
+          <button
+            type="button"
+            key={c.id}
+            className={`chip ${selected.includes(c.id) ? "on" : ""}`}
+            aria-pressed={selected.includes(c.id)}
+            onClick={() => onToggle(c.id)}
+          >
+            {selected.includes(c.id) && <Check size={12} />}
+            {c.name}
+          </button>
+        ))}
+        {!sorted.length && <span className="chip-empty">Δεν έχεις φτιάξει ακόμη κατηγορίες.</span>}
+      </div>
+      <div className="chip-add">
+        <input
+          maxLength={60}
+          value={name}
+          placeholder="Νέα κατηγορία, π.χ. Προσφορά"
+          aria-label="Όνομα νέας κατηγορίας"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <button type="button" className="button secondary small" onClick={add} disabled={!name.trim() || busy}>
+          <Plus size={14} />
+          {busy ? "Προσθήκη…" : "Προσθήκη"}
+        </button>
+      </div>
+      {error && <small className="form-error">{error}</small>}
+    </div>
+  );
+}
 export function PromotionForm({
   initial,
   previous,
   businessId,
   businesses,
+  categories,
+  initialCategories,
   userId,
   today,
   onSave,
+  onCreateCategory,
   onClose,
 }: {
   initial?: Promotion;
   previous?: Promotion;
   businessId?: string;
   businesses: Business[];
+  categories: Category[];
+  initialCategories: string[];
   userId: string;
   today: string;
-  onSave: (p: Promotion) => Promise<void>;
+  onSave: (p: Promotion, categoryIds: string[]) => Promise<void>;
+  onCreateCategory: (name: string) => Promise<Category>;
   onClose: () => void;
 }) {
   const [values, setValues] = useState<Promotion>(() => {
@@ -225,6 +312,7 @@ export function PromotionForm({
         ? previous.next_action_on
         : today
       : today;
+    const kind = previous?.kind || "ads";
     return (
       initial || {
         id: crypto.randomUUID(),
@@ -232,21 +320,48 @@ export function PromotionForm({
         business_id: previous?.business_id || businessId || "",
         title: "",
         channel: previous?.channel || "Facebook + Instagram",
-        starts_on: start,
-        ends_on: addDays(start, 14),
+        starts_on: kind === "post" ? today : start,
+        ends_on: kind === "post" ? today : addDays(start, 14),
         next_action_on: null,
-        published_on: null,
-        status: "scheduled",
+        published_on: kind === "post" ? today : null,
+        status: kind === "post" ? "completed" : "scheduled",
         notes: "",
         previous_promotion_id: previous?.id || null,
         created_at: new Date().toISOString(),
+        kind,
+        cost: null,
       }
     );
   });
+  const [selected, setSelected] = useState<string[]>(initialCategories);
+  const [costText, setCostText] = useState(
+    initial?.cost !== null && initial?.cost !== undefined ? String(initial.cost).replace(".", ",") : "",
+  );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const isPost = values.kind === "post";
   const update = (key: keyof Promotion, value: string | null) =>
     setValues((v) => ({ ...v, [key]: value }));
+  const setKind = (kind: PromotionKind) =>
+    setValues((v) => {
+      if (kind === v.kind) return v;
+      if (kind === "post") {
+        const day = v.published_on && v.published_on <= today ? v.published_on : today;
+        return { ...v, kind, status: "completed", published_on: day, starts_on: day, ends_on: day };
+      }
+      const start = initial && initial.kind === "ads" ? initial.starts_on : today;
+      const end = initial && initial.kind === "ads" ? initial.ends_on : addDays(today, 14);
+      return {
+        ...v,
+        kind,
+        status: initial && initial.kind === "ads" ? initial.status : "scheduled",
+        published_on: initial && initial.kind === "ads" ? initial.published_on : null,
+        starts_on: start,
+        ends_on: end,
+      };
+    });
+  const setPostDay = (day: string) =>
+    setValues((v) => ({ ...v, published_on: day || null, starts_on: day, ends_on: day }));
   const statusChange = (status: PromotionStatus) =>
     setValues((v) => ({
       ...v,
@@ -258,10 +373,27 @@ export function PromotionForm({
             ? v.published_on
             : v.published_on || today,
     }));
+  const toggle = (id: string) =>
+    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
-    const issue = validatePromotion(values, today);
+    const names = categories
+      .filter((c) => selected.includes(c.id))
+      .map((c) => c.name)
+      .sort((a, b) => a.localeCompare(b, "el"));
+    const rawCost = costText.trim().replace(/\s|€/g, "").replace(",", ".");
+    const cost = rawCost === "" ? null : Number(rawCost);
+    if (cost !== null && (!/^\d+(\.\d{1,2})?$/.test(rawCost) || !Number.isFinite(cost))) {
+      setError("Γράψε το κόστος ως ποσό, π.χ. 45 ή 45,50.");
+      return;
+    }
+    const candidate: Promotion = {
+      ...values,
+      title: names.join(" · ").slice(0, 200),
+      cost,
+    };
+    const issue = validatePromotion(candidate, today);
     if (issue) {
       setError(issue);
       return;
@@ -273,7 +405,7 @@ export function PromotionForm({
     setBusy(true);
     setError("");
     try {
-      await onSave({ ...values, title: values.title.trim() });
+      await onSave(candidate, selected);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -291,8 +423,8 @@ export function PromotionForm({
       }
       description={
         previous
-          ? `Συνέχεια της προώθησης «${previous.title}». Το ιστορικό της παραμένει.`
-          : "Οργάνωσε τη δημοσίευση, τη λήξη και το επόμενο βήμα."
+          ? "Συνέχεια της προηγούμενης προώθησης. Το ιστορικό της παραμένει."
+          : "Κατηγορίες, είδος, κόστος και ημερομηνίες."
       }
       onClose={onClose}
       busy={busy}
@@ -316,16 +448,40 @@ export function PromotionForm({
               ))}
             </select>
           </label>
-          <label className="field full">
-            Τίτλος προώθησης *
-            <input
-              required
-              maxLength={200}
-              value={values.title}
-              onChange={(e) => update("title", e.target.value)}
-              placeholder="π.χ. Προσφορά Οκτωβρίου"
+          <div className="field full">
+            <span>Κατηγορίες * <small>(μία ή περισσότερες)</small></span>
+            <CategoryPicker
+              categories={categories}
+              selected={selected}
+              onToggle={toggle}
+              onCreate={onCreateCategory}
             />
-          </label>
+            {initial && !initialCategories.length && initial.title && (
+              <small>Παλιός τίτλος: «{initial.title}». Διάλεξε κατηγορίες για να τον αντικαταστήσεις.</small>
+            )}
+          </div>
+          <div className="field">
+            <span>Είδος *</span>
+            <div className="segmented" role="radiogroup" aria-label="Είδος">
+              {(["post", "ads"] as PromotionKind[]).map((k) => (
+                <button
+                  type="button"
+                  key={k}
+                  role="radio"
+                  aria-checked={values.kind === k}
+                  className={values.kind === k ? "on" : ""}
+                  onClick={() => setKind(k)}
+                >
+                  {kindLabels[k]}
+                </button>
+              ))}
+            </div>
+            <small>
+              {isPost
+                ? "Το post καταχωρίζεται αμέσως ως ολοκληρωμένο."
+                : "Διαφήμιση με διάρκεια προβολής."}
+            </small>
+          </div>
           <label className="field">
             Κανάλι *
             <select
@@ -338,57 +494,86 @@ export function PromotionForm({
             </select>
           </label>
           <label className="field">
-            Κατάσταση *
-            <select
-              value={values.status}
-              onChange={(e) => statusChange(e.target.value as PromotionStatus)}
-            >
-              <option value="scheduled">Προγραμματισμένη</option>
-              <option value="published">Δημοσιευμένη</option>
-              <option value="completed">Ολοκληρωμένη</option>
-              <option value="cancelled">Ακυρωμένη</option>
-            </select>
-          </label>
-          <label className="field">
-            Έναρξη προβολής *
+            Κόστος διαφήμισης (€)
             <input
-              required
-              type="date"
-              name="starts_on"
-              onInput={(e) => update("starts_on", e.currentTarget.value)}
-              value={values.starts_on}
-              onChange={(e) => update("starts_on", e.target.value)}
+              inputMode="decimal"
+              value={costText}
+              onChange={(e) => setCostText(e.target.value)}
+              placeholder="π.χ. 45,50"
             />
+            <small>Προαιρετικό.</small>
           </label>
-          <label className="field">
-            Λήξη προβολής *
-            <input
-              required
-              type="date"
-              name="ends_on"
-              onInput={(e) => update("ends_on", e.currentTarget.value)}
-              min={values.starts_on}
-              value={values.ends_on}
-              onChange={(e) => update("ends_on", e.target.value)}
-            />
-            <small>Η διαφήμιση υπολογίζεται ενεργή και την ημέρα λήξης.</small>
-          </label>
-          {values.status !== "scheduled" && (
-            <label className="field full">
-              Ημερομηνία δημοσίευσης{values.status !== "cancelled" ? " *" : ""}
+          {isPost ? (
+            <label className="field">
+              Ημερομηνία δημοσίευσης *
               <input
-                required={values.status !== "cancelled"}
+                required
                 type="date"
-                name="published_on"
-                onInput={(e) =>
-                  update("published_on", e.currentTarget.value || null)
-                }
+                name="post_day"
                 max={today}
                 value={values.published_on || ""}
-                onChange={(e) => update("published_on", e.target.value || null)}
+                onInput={(e) => setPostDay(e.currentTarget.value)}
+                onChange={(e) => setPostDay(e.target.value)}
               />
-              <small>Πότε ανέβηκε πραγματικά η διαφήμιση.</small>
             </label>
+          ) : (
+            <label className="field">
+              Κατάσταση *
+              <select
+                value={values.status}
+                onChange={(e) => statusChange(e.target.value as PromotionStatus)}
+              >
+                <option value="scheduled">Προγραμματισμένη</option>
+                <option value="published">Δημοσιευμένη</option>
+                <option value="completed">Ολοκληρωμένη</option>
+                <option value="cancelled">Ακυρωμένη</option>
+              </select>
+            </label>
+          )}
+          {!isPost && (
+            <>
+              <label className="field">
+                Έναρξη προβολής *
+                <input
+                  required
+                  type="date"
+                  name="starts_on"
+                  onInput={(e) => update("starts_on", e.currentTarget.value)}
+                  value={values.starts_on}
+                  onChange={(e) => update("starts_on", e.target.value)}
+                />
+              </label>
+              <label className="field">
+                Λήξη προβολής *
+                <input
+                  required
+                  type="date"
+                  name="ends_on"
+                  onInput={(e) => update("ends_on", e.currentTarget.value)}
+                  min={values.starts_on}
+                  value={values.ends_on}
+                  onChange={(e) => update("ends_on", e.target.value)}
+                />
+                <small>Η διαφήμιση υπολογίζεται ενεργή και την ημέρα λήξης.</small>
+              </label>
+              {values.status !== "scheduled" && (
+                <label className="field full">
+                  Ημερομηνία δημοσίευσης{values.status !== "cancelled" ? " *" : ""}
+                  <input
+                    required={values.status !== "cancelled"}
+                    type="date"
+                    name="published_on"
+                    onInput={(e) =>
+                      update("published_on", e.currentTarget.value || null)
+                    }
+                    max={today}
+                    value={values.published_on || ""}
+                    onChange={(e) => update("published_on", e.target.value || null)}
+                  />
+                  <small>Πότε ανέβηκε πραγματικά η διαφήμιση.</small>
+                </label>
+              )}
+            </>
           )}
           <label className="field full">
             Πότε χρειάζεται η επόμενη προώθηση;

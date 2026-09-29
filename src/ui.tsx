@@ -1,3 +1,4 @@
+import { createContext, useContext } from "react";
 import {
   ArrowUpRight,
   MessageCircle,
@@ -15,7 +16,32 @@ import {
   type Business,
   type Promotion,
   type Channel,
+  formatCost,
+  kindLabels,
+  type PromotionKind,
 } from "./domain";
+
+/** Shows a promotion by its categories (falls back to the old title). Provided by App. */
+export const LabelContext = createContext<{
+  label: (p: Promotion) => string;
+  categories: (p: Promotion) => string[];
+}>({ label: (p) => p.title, categories: () => [] });
+export const useLabel = () => useContext(LabelContext);
+export function KindPill({ kind }: { kind: PromotionKind }) {
+  return <span className={`kind-pill ${kind}`}>{kindLabels[kind]}</span>;
+}
+export function CategoryChips({ names }: { names: string[] }) {
+  if (!names.length) return null;
+  return (
+    <span className="category-chips">
+      {names.map((n) => (
+        <span className="chip small" key={n}>
+          {n}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export const labels = {
   scheduled: "Προγραμματισμένη",
@@ -108,6 +134,7 @@ export function PromotionTable({
   onOpen: (p: Promotion) => void;
   onBusiness: (b: Business) => void;
 }) {
+  const { label, categories } = useLabel();
   if (!promotions.length)
     return (
       <Empty title="Δεν υπάρχουν προωθήσεις εδώ ακόμη.">
@@ -122,6 +149,7 @@ export function PromotionTable({
             <th>ΕΠΙΧΕΙΡΗΣΗ / ΠΡΟΩΘΗΣΗ</th>
             <th>ΚΑΝΑΛΙ</th>
             <th>ΔΙΑΡΚΕΙΑ</th>
+            <th>ΚΟΣΤΟΣ</th>
             <th>ΚΑΤΑΣΤΑΣΗ</th>
             <th>
               <span className="sr-only">Άνοιγμα</span>
@@ -146,28 +174,38 @@ export function PromotionTable({
                       <button className="text-link" onClick={() => onOpen(p)}>
                         {business?.name || "Επιχείρηση"}
                       </button>
-                      <span className="table-subtitle">{p.title}</span>
+                      {categories(p).length ? (
+                        <CategoryChips names={categories(p)} />
+                      ) : (
+                        <span className="table-subtitle">{p.title}</span>
+                      )}
                     </div>
                   </div>
                 </td>
                 <td>
-                  <ChannelPill channel={p.channel} />
+                  <div className="channel-cell">
+                    <KindPill kind={p.kind} />
+                    <ChannelPill channel={p.channel} />
+                  </div>
                 </td>
                 <td>
                   <span className="date-range">
-                    {dateLabel(p.starts_on)} — {dateLabel(p.ends_on)}
+                    {p.kind === "post"
+                      ? dateLabel(p.starts_on)
+                      : `${dateLabel(p.starts_on)} — ${dateLabel(p.ends_on)}`}
                   </span>
                   <span className="table-subtitle">
                     {new Date(p.ends_on + "T12:00:00").getFullYear()}
                   </span>
                 </td>
+                <td className="cost-cell">{formatCost(p.cost)}</td>
                 <td>
                   <Badge promotion={p} today={today} />
                 </td>
                 <td>
                   <button
                     className="icon-button"
-                    aria-label={`Λεπτομέρειες: ${p.title}`}
+                    aria-label={`Λεπτομέρειες: ${label(p)}`}
                     onClick={() => onOpen(p)}
                   >
                     <ArrowUpRight size={17} />

@@ -18,7 +18,7 @@ import {
   type Data,
   type Promotion,
 } from "./domain";
-import { Avatar, Empty, PromotionTable } from "./ui";
+import { Avatar, Empty, PromotionTable, useLabel } from "./ui";
 
 type Props = {
   data: Data;
@@ -40,6 +40,7 @@ export default function Dashboard({
   onSchedule,
   onPromotions,
 }: Props) {
+  const { label } = useLabel();
   const active = data.promotions.filter((p) => phase(p, today) === "active");
   const expiring = active.filter((p) => p.ends_on <= addDays(today, 7));
   const pending = actions(data.promotions);
@@ -157,7 +158,7 @@ export default function Dashboard({
                     <button
                       className="icon-button bordered"
                       onClick={() => onAction(item.promotion, item.type)}
-                      aria-label={`${item.type === "renew" ? "Ανανέωση" : "Δημοσίευση"}: ${item.promotion.title}`}
+                      aria-label={`${item.type === "renew" ? "Ανανέωση" : "Δημοσίευση"}: ${label(item.promotion)}`}
                     >
                       <ArrowRight size={16} />
                     </button>

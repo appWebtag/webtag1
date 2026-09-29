@@ -50,10 +50,30 @@ export function demoData(): Data {
     notes: "",
     previous_promotion_id: null,
     created_at,
+    kind: "ads",
+    cost: null,
+  });
+  const categories = ["Προσφορά", "Νέο μενού", "Εκδήλωση", "Brand awareness", "Εποχική"].map((name, i) => ({
+    id: `c${i + 1}`,
+    user_id,
+    name,
+    created_at,
+  }));
+  const post = (id: string, business_id: string, title: string, channel: Channel, day: number, cost: number | null): Promotion => ({
+    ...make(id, business_id, title, channel, day, day, null, "completed"),
+    kind: "post",
+    cost,
   });
   return {
     businesses,
+    categories,
+    categoryLinks: [
+      ["p1", "c2"], ["p1", "c5"], ["p2", "c1"], ["p3", "c4"], ["p4", "c5"], ["p4", "c1"],
+      ["p5", "c3"], ["p6", "c1"], ["p7", "c2"], ["p8", "c4"], ["p9", "c3"], ["p10", "c1"],
+    ].map(([promotion_id, category_id]) => ({ promotion_id, category_id })),
     promotions: [
+      post("p9", "b4", "Εκδήλωση", "Instagram", -2, null),
+      post("p10", "b3", "Προσφορά", "Facebook", -4, 15),
       make(
         "p1",
         "b1",
@@ -63,8 +83,8 @@ export function demoData(): Data {
         2,
         0,
       ),
-      make("p2", "b2", "Γνώρισε το νέο σου studio", "Instagram", -8, 5, 3),
-      make("p3", "b3", "Κάθε πρωί, μια καλή αρχή", "Facebook", -7, 1, -1),
+      { ...make("p2", "b2", "Γνώρισε το νέο σου studio", "Instagram", -8, 5, 3), cost: 60 },
+      { ...make("p3", "b3", "Κάθε πρωί, μια καλή αρχή", "Facebook", -7, 1, -1), cost: 40 },
       make("p4", "b4", "Autumn essentials", "Instagram", -5, 9, 7),
       make(
         "p5",

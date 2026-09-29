@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Business, Data, Promotion } from "./domain";
+import type { Business, Category, CategoryLink, Data, Promotion } from "./domain";
 
 export const demoMode = import.meta.env.VITE_DEMO_MODE === "true";
 const url = import.meta.env.VITE_SUPABASE_URL?.trim();
@@ -47,6 +47,8 @@ export const supabase =
 
 export function friendlyError(error: unknown): string {
   const code = (error as { code?: string })?.code;
+  if (code === "23505" && /categor/i.test((error as { message?: string })?.message || ""))
+    return "Υπάρχει ήδη κατηγορία με αυτό το όνομα.";
   if (code === "23505")
     return "Έχει ήδη καταχωριστεί νέα προώθηση για αυτή την ανανέωση. Ανανέωσε τη σελίδα.";
   if (code === "42501")
@@ -59,7 +61,10 @@ export function friendlyError(error: unknown): string {
     return "Δεν έχουν ακόμη δημιουργηθεί οι πίνακες της εφαρμογής στη βάση δεδομένων.";
   return "Η ενέργεια δεν ολοκληρώθηκε. Έλεγξε τη σύνδεση στο διαδίκτυο και δοκίμασε ξανά. Τα στοιχεία της φόρμας παραμένουν εδώ.";
 }
-async function fetchAll(table: "businesses" | "promotions", userId: string) {
+async function fetchAll(
+  table: "businesses" | "promotions" | "promotion_categories" | "promotion_category_links",
+  userId: string,
+) {
   if (!supabase) throw new Error("Not configured");
   const rows: unknown[] = [];
   for (let from = 0; ; from += 1000) {
@@ -67,7 +72,7 @@ async function fetchAll(table: "businesses" | "promotions", userId: string) {
       .from(table)
       .select("*")
       .eq("user_id", userId)
-      .order("id")
+      .order(table === "promotion_category_links" ? "promotion_id" : "id")
       .range(from, from + 999);
     if (error) throw error;
     rows.push(...data);
@@ -75,13 +80,22 @@ async function fetchAll(table: "businesses" | "promotions", userId: string) {
   }
 }
 export async function loadData(userId: string): Promise<Data> {
-  const [businesses, promotions] = await Promise.all([
+  const [businesses, promotions, categories, categoryLinks] = await Promise.all([
     fetchAll("businesses", userId),
     fetchAll("promotions", userId),
+    fetchAll("promotion_categories", userId),
+    fetchAll("promotion_category_links", userId),
   ]);
   return {
     businesses: businesses as Business[],
-    promotions: promotions as Promotion[],
+    promotions: (promotions as Promotion[]).map((p) => ({
+      ...p,
+      cost: p.cost === null || p.cost === undefined ? null : Number(p.cost),
+    })),
+    categories: categories as Category[],
+    categoryLinks: (categoryLinks as (CategoryLink & { user_id: string })[]).map(
+      ({ promotion_id, category_id }) => ({ promotion_id, category_id }),
+    ),
   };
 }
 export async function saveBusiness(
@@ -115,4 +129,36 @@ export async function savePromotion(
   const { data, error } = await query.select().single();
   if (error) throw error;
   return data as Promotion;
+}
+export async function saveCategory(category: Category, exists: boolean): Promise<Category> {
+  if (!supabase) throw new Error("Not configured");
+  const query = exists
+    ? supabase
+        .from("promotion_categories")
+        .update({ name: category.name })
+        .eq("id", category.id)
+        .eq("user_id", category.user_id)
+    : supabase
+        .from("promotion_categories")
+        .insert({ id: category.id, user_id: category.user_id, name: category.name });
+  const { data, error } = await query.select().single();
+  if (error) throw error;
+  return data as Category;
+}
+export async function deleteCategory(id: string, userId: string) {
+  if (!supabase) throw new Error("Not configured");
+  const { error } = await supabase
+    .from("promotion_categories")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+export async function setPromotionCategories(promotionId: string, categoryIds: string[]) {
+  if (!supabase) throw new Error("Not configured");
+  const { error } = await supabase.rpc("set_promotion_categories", {
+    p_promotion: promotionId,
+    p_categories: categoryIds,
+  });
+  if (error) throw error;
 }

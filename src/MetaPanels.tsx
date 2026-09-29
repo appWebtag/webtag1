@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Link2, X } from "lucide-react";
 import { dateLabel, type Business, type Promotion } from "./domain";
+import { useLabel } from "./ui";
 import {
   adsForLinks,
   costPer,
@@ -262,6 +263,7 @@ export function BusinessMetaComparison({
   meta: MetaData;
   onOpen: (p: Promotion) => void;
 }) {
+  const { label } = useLabel();
   const rows = promotions
     .map((p) => ({ p, r: meta.results.find((x) => x.promotion_id === p.id) }))
     .filter((x): x is { p: Promotion; r: MetaResult } => !!x.r)
@@ -300,7 +302,7 @@ export function BusinessMetaComparison({
                 <tr key={p.id}>
                   <td>
                     <button className="text-link" onClick={() => onOpen(p)}>
-                      {p.title}
+                      {label(p)}
                     </button>
                     <span className="table-subtitle">
                       {dateLabel(r.since)} – {dateLabel(r.until, true)}

@@ -8,7 +8,7 @@ import {
   type Data,
   type Promotion,
 } from "./domain";
-import { Avatar, Empty } from "./ui";
+import { Avatar, Empty, useLabel } from "./ui";
 
 export default function Schedule({
   data,
@@ -23,6 +23,7 @@ export default function Schedule({
   onNew: () => void;
   onAction: (p: Promotion, type: "publish" | "renew") => void;
 }) {
+  const { label } = useLabel();
   const [month, setMonth] = useState(today.slice(0, 7));
   const [selected, setSelected] = useState<string | null>(null);
   const first = `${month}-01`;
@@ -134,7 +135,7 @@ export default function Schedule({
                     <button
                       key={e.promotion.id + e.type}
                       className={`calendar-event ${e.type}`}
-                      title={`${e.label}: ${e.promotion.title}`}
+                      title={`${e.label}: ${label(e.promotion)}`}
                       onClick={() => onOpen(e.promotion)}
                     >
                       {e.label}:{" "}
@@ -201,7 +202,7 @@ export default function Schedule({
                   {a.type === "renew"
                     ? "Ετοιμασία νέας προώθησης"
                     : "Δημοσίευση"}{" "}
-                  · {a.promotion.title}
+                  · {label(a.promotion)}
                 </span>
               </div>
               <span className={`due-label ${a.date < today ? "late" : ""}`}>

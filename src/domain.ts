@@ -25,6 +25,18 @@ export interface Business {
   notes: string;
   created_at: string;
 }
+export type PromotionKind = "post" | "ads";
+export const kindLabels: Record<PromotionKind, string> = { post: "Post", ads: "Ads" };
+export interface Category {
+  id: string;
+  user_id: string;
+  name: string;
+  created_at: string;
+}
+export interface CategoryLink {
+  promotion_id: string;
+  category_id: string;
+}
 export interface Promotion {
   id: string;
   user_id: string;
@@ -39,10 +51,69 @@ export interface Promotion {
   notes: string;
   previous_promotion_id: string | null;
   created_at: string;
+  kind: PromotionKind;
+  cost: number | null;
 }
 export interface Data {
   businesses: Business[];
   promotions: Promotion[];
+  categories: Category[];
+  categoryLinks: CategoryLink[];
+}
+export function categoryIds(promotionId: string, links: CategoryLink[]): string[] {
+  return links.filter((l) => l.promotion_id === promotionId).map((l) => l.category_id);
+}
+export function categoryNames(promotionId: string, data: Pick<Data, "categories" | "categoryLinks">): string[] {
+  const ids = categoryIds(promotionId, data.categoryLinks);
+  return data.categories
+    .filter((c) => ids.includes(c.id))
+    .map((c) => c.name)
+    .sort((a, b) => a.localeCompare(b, "el"));
+}
+/** What to show as the promotion's name: its categories, or the older free-text title. */
+export function promotionLabel(p: Promotion, data: Pick<Data, "categories" | "categoryLinks">): string {
+  const names = categoryNames(p.id, data);
+  return names.length ? names.join(" · ") : p.title;
+}
+export function formatCost(cost: number | null): string {
+  return cost === null
+    ? "—"
+    : new Intl.NumberFormat("el-GR", { style: "currency", currency: "EUR" }).format(cost);
+}
+export interface PromotionFilters {
+  kind: "all" | PromotionKind;
+  categories: string[];
+  channel: string;
+  business: string;
+  from: string;
+  to: string;
+}
+export const emptyFilters: PromotionFilters = {
+  kind: "all",
+  categories: [],
+  channel: "",
+  business: "",
+  from: "",
+  to: "",
+};
+/** Keeps promotions that match every chosen filter. Dates: the promotion's period overlaps [from, to]. */
+export function applyFilters(
+  promotions: Promotion[],
+  f: PromotionFilters,
+  links: CategoryLink[],
+): Promotion[] {
+  return promotions.filter((p) => {
+    if (f.kind !== "all" && p.kind !== f.kind) return false;
+    if (f.channel && p.channel !== f.channel) return false;
+    if (f.business && p.business_id !== f.business) return false;
+    if (f.from && p.ends_on < f.from) return false;
+    if (f.to && p.starts_on > f.to) return false;
+    if (f.categories.length) {
+      const own = categoryIds(p.id, links);
+      if (!f.categories.some((c) => own.includes(c))) return false;
+    }
+    return true;
+  });
 }
 
 export function todayISO(now = new Date()): string {
@@ -135,6 +206,8 @@ export function validatePromotion(
     | "published_on"
     | "next_action_on"
     | "status"
+    | "kind"
+    | "cost"
   >,
   today = todayISO(),
 ): string | null {
@@ -142,8 +215,20 @@ export function validatePromotion(
     /^\d{4}-\d{2}-\d{2}$/.test(s) &&
     !Number.isNaN(Date.parse(s)) &&
     new Date(`${s}T12:00:00Z`).toISOString().slice(0, 10) === s;
-  if (!p.title.trim() || !p.business_id)
-    return "Συμπλήρωσε τίτλο και επιχείρηση.";
+  if (!p.business_id) return "Επίλεξε επιχείρηση.";
+  if (!p.title.trim()) return "Διάλεξε τουλάχιστον μία κατηγορία.";
+  if (p.cost !== null && p.cost !== undefined && (!Number.isFinite(p.cost) || p.cost < 0 || p.cost > 10000000))
+    return "Το κόστος πρέπει να είναι θετικό ποσό.";
+  if (p.kind === "post") {
+    if (!p.published_on || !validDate(p.published_on))
+      return "Συμπλήρωσε την ημερομηνία δημοσίευσης του post.";
+    if (p.published_on > today)
+      return "Η ημερομηνία δημοσίευσης δεν μπορεί να είναι στο μέλλον.";
+    if (p.starts_on !== p.published_on || p.ends_on !== p.published_on)
+      return "Το post έχει μία ημερομηνία δημοσίευσης.";
+    if (p.status !== "completed" && p.status !== "cancelled")
+      return "Το post καταχωρίζεται ως ολοκληρωμένο.";
+  }
   if (!validDate(p.starts_on) || !validDate(p.ends_on))
     return "Συμπλήρωσε έγκυρες ημερομηνίες έναρξης και λήξης.";
   if (p.ends_on < p.starts_on)
