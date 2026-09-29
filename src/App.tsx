@@ -8,6 +8,7 @@ import {
 import {
   ArrowLeft,
   ArrowUpRight,
+  BarChart3,
   CalendarDays,
   Check,
   CircleAlert,
@@ -30,7 +31,19 @@ import Dashboard from "./Dashboard";
 import Schedule from "./Schedule";
 import { BusinessForm, Modal, PromotionForm } from "./forms";
 import { Avatar, Badge, ChannelPill, Empty, PromotionTable } from "./ui";
-import { demoData } from "./demo";
+import { demoData, demoMeta } from "./demo";
+import MetaView from "./MetaView";
+import { BusinessMetaComparison, PromotionMetaPanel } from "./MetaPanels";
+import {
+  addLink,
+  emptyMeta,
+  loadMeta,
+  metaSync,
+  removeLink,
+  reviewAds,
+  saveAccount,
+  type MetaData,
+} from "./meta";
 import {
   actions,
   dateLabel,
@@ -52,7 +65,13 @@ import {
   supabase,
 } from "./data";
 
-type View = "overview" | "businesses" | "promotions" | "schedule" | "business";
+type View =
+  | "overview"
+  | "businesses"
+  | "promotions"
+  | "schedule"
+  | "business"
+  | "meta";
 type Popup =
   | { type: "business-form"; initial?: Business }
   | {
@@ -74,6 +93,7 @@ const navigation = [
   { id: "businesses" as const, title: "Επιχειρήσεις", Icon: Users },
   { id: "promotions" as const, title: "Προωθήσεις", Icon: Megaphone },
   { id: "schedule" as const, title: "Πρόγραμμα", Icon: CalendarDays },
+  { id: "meta" as const, title: "Meta Ads", Icon: BarChart3 },
 ];
 function Brand() {
   return (
@@ -177,6 +197,10 @@ export default function App() {
   const [mutationError, setMutationError] = useState("");
   const [busy, setBusy] = useState(false);
   const [today, setToday] = useState(todayISO());
+  const [demoMetaState] = useState(() => (demoMode ? demoMeta() : null));
+  const [meta, setMeta] = useState<MetaData>(() => demoMetaState?.meta || emptyMeta);
+  const [metaError, setMetaError] = useState("");
+  const [metaBusy, setMetaBusy] = useState(false);
   const userId = demoMode ? "demo" : session?.user.id;
   const userRef = useRef(userId);
   userRef.current = userId;
@@ -243,6 +267,49 @@ export default function App() {
       active = false;
     };
   }, [userId, revision]);
+  const reloadMeta = useCallback(async () => {
+    if (demoMode || !userId) return;
+    try {
+      const value = await loadMeta(userId);
+      if (userRef.current === userId) {
+        setMeta(value);
+        setMetaError("");
+      }
+    } catch (e) {
+      const code = (e as { code?: string })?.code;
+      if (userRef.current === userId)
+        setMetaError(
+          code === "PGRST205" || code === "42P01"
+            ? "Δεν έχουν δημιουργηθεί ακόμη οι πίνακες Meta στη βάση δεδομένων."
+            : "Δεν φορτώθηκαν τα δεδομένα Meta. Δοκίμασε ξανά.",
+        );
+    }
+  }, [userId]);
+  useEffect(() => {
+    if (demoMode) return;
+    setMeta(emptyMeta);
+    reloadMeta();
+  }, [reloadMeta, revision]);
+  const metaAction = async (fn: () => Promise<void>, done?: string) => {
+    if (!userId) throw new Error("Συνδέσου ξανά.");
+    setMetaBusy(true);
+    try {
+      await fn();
+      await reloadMeta();
+      if (done) setToast(done);
+    } catch (e) {
+      throw new Error(e instanceof Error && !(e as { code?: string }).code ? e.message : friendlyError(e));
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+  const demoOnly = (update: (m: MetaData) => MetaData) => {
+    setMeta(update);
+    return Promise.resolve();
+  };
+  const newAdsCount = meta.ads.filter(
+    (a) => a.review_state === "new" && a.account_id === meta.account?.ad_account_id,
+  ).length;
   const navigate = useCallback((next: View) => {
     setView(next);
     setSearch("");
@@ -486,6 +553,11 @@ export default function App() {
               {title}
               {id === "businesses" && data.businesses.length > 0 && (
                 <span className="nav-count">{data.businesses.length}</span>
+              )}
+              {id === "meta" && newAdsCount > 0 && (
+                <span className="nav-count highlight" title="Νέες διαφημίσεις προς αντιστοίχιση">
+                  {newAdsCount}
+                </span>
               )}
             </button>
           ))}
@@ -822,6 +894,12 @@ export default function App() {
                         onBusiness={openBusiness}
                       />
                     </section>
+                    <BusinessMetaComparison
+                      business={activeBusiness}
+                      promotions={businessPromotions}
+                      meta={meta}
+                      onOpen={openPromotion}
+                    />
                     <section className="panel">
                       <div className="section-heading">
                         <div>
@@ -845,6 +923,43 @@ export default function App() {
                     </section>
                   </div>
                 </>
+              )}
+              {view === "meta" && (
+                <MetaView
+                  meta={meta}
+                  metaError={metaError}
+                  businesses={data.businesses}
+                  demo={demoMode}
+                  busy={metaBusy}
+                  onSaveAccount={(id) =>
+                    demoMode
+                      ? demoOnly((m) => ({ ...m, account: m.account && { ...m.account, ad_account_id: id } }))
+                      : metaAction(
+                          () => saveAccount(userId!, id, !!meta.account),
+                          "Ο λογαριασμός αποθηκεύτηκε. Πάτα «Συγχρονισμός τώρα».",
+                        )
+                  }
+                  onSync={() =>
+                    demoMode
+                      ? demoOnly((m) => m).then(() => setToast("Δοκιμαστική προβολή: δεν γίνεται πραγματικός συγχρονισμός."))
+                      : metaAction(async () => {
+                          const r = await metaSync();
+                          if (r.status !== "ok") throw new Error(r.message || "Ο συγχρονισμός δεν ολοκληρώθηκε.");
+                        }, "Ο συγχρονισμός ολοκληρώθηκε.")
+                  }
+                  onReview={(ids, businessId) =>
+                    demoMode
+                      ? demoOnly((m) => ({
+                          ...m,
+                          ads: m.ads.map((a) =>
+                            ids.includes(a.ad_id)
+                              ? { ...a, business_id: businessId, review_state: businessId ? "assigned" : "ignored" }
+                              : a,
+                          ),
+                        }))
+                      : metaAction(() => reviewAds(userId!, ids, businessId))
+                  }
+                />
               )}
               {view === "schedule" && (
                 <Schedule
@@ -920,6 +1035,32 @@ export default function App() {
             </div>
           </dl>
           {current.notes && <div className="note-panel">{current.notes}</div>}
+          <PromotionMetaPanel
+            promotion={current}
+            meta={meta}
+            userId={userId!}
+            demo={demoMode}
+            demoDaily={demoMetaState?.daily}
+            onOpenMeta={() => {
+              setPopup(null);
+              navigate("meta");
+            }}
+            onLink={(level, metaId) =>
+              demoMode
+                ? demoOnly((m) => ({
+                    ...m,
+                    links: [...m.links, { id: `l${Date.now()}`, promotion_id: current.id, level, meta_id: metaId }],
+                  }))
+                : metaAction(async () => {
+                    await addLink(userId!, current.id, level, metaId);
+                  }, "Η σύνδεση αποθηκεύτηκε. Τα αποτελέσματα ενημερώνονται στον επόμενο συγχρονισμό.")
+            }
+            onUnlink={(id) =>
+              demoMode
+                ? demoOnly((m) => ({ ...m, links: m.links.filter((l) => l.id !== id) }))
+                : metaAction(() => removeLink(userId!, id))
+            }
+          />
           {next && (
             <div className="notice">
               <Check size={16} />
