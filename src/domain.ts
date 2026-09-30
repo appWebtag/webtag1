@@ -26,6 +26,17 @@ export interface Business {
   created_at: string;
   logo_path?: string | null;
 }
+export interface Profile {
+  user_id: string;
+  full_name: string;
+  company_name: string;
+  phone: string;
+  email: string;
+  website: string;
+  address: string;
+  vat_number: string;
+  logo_path: string | null;
+}
 export type PromotionKind = "post" | "ads";
 export const kindLabels: Record<PromotionKind, string> = { post: "Post", ads: "Ads" };
 export interface Category {

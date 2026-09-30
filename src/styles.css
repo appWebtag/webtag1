@@ -2515,3 +2515,49 @@ button.chip:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------- My account ---------- */
+.profile > .profile-open {
+  margin-left: 0;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 6px;
+  margin: -6px 0 -6px -6px;
+  border-radius: 9px;
+  color: inherit;
+  transition: background 0.15s;
+}
+.profile > .profile-open:hover {
+  background: #504f4e;
+}
+.profile-open > div {
+  min-width: 0;
+}
+.profile-open strong,
+.profile-open small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-avatar.has-logo,
+.small-profile.has-logo {
+  background: #fff;
+  overflow: hidden;
+  padding: 2px;
+}
+.profile-avatar.has-logo img,
+.small-profile.has-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 50%;
+}
+.small-profile-button {
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+}

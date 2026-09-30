@@ -31,7 +31,7 @@ import {
 import type { Session } from "@supabase/supabase-js";
 import Dashboard from "./Dashboard";
 import Schedule from "./Schedule";
-import { BusinessForm, Modal, PromotionForm } from "./forms";
+import { BusinessForm, Modal, ProfileForm, PromotionForm } from "./forms";
 import {
   Avatar,
   Badge,
@@ -75,6 +75,7 @@ import {
   type Business,
   type Category,
   type Data,
+  type Profile,
   type Promotion,
   type PromotionFilters,
 } from "./domain";
@@ -83,7 +84,9 @@ import {
   friendlyError,
   loadData,
   deleteCategory,
+  loadProfile,
   removeLogoFile,
+  saveProfile,
   saveBusiness,
   signedLogoUrls,
   uploadLogo,
@@ -110,6 +113,7 @@ type Popup =
     }
   | { type: "promotion"; id: string }
   | { type: "categories" }
+  | { type: "profile" }
   | {
       type: "confirm";
       promotion: Promotion;
@@ -222,6 +226,7 @@ export default function App() {
   const [filter, setFilter] = useState("all");
   const [filters, setFilters] = useState<PromotionFilters>(emptyFilters);
   const [logoUrls, setLogoUrls] = useState<Record<string, string>>({});
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [exporting, setExporting] = useState(false);
   const [popup, setPopup] = useState<Popup>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -286,10 +291,16 @@ export default function App() {
     let active = true;
     setLoading(true);
     loadData(userId)
-      .then((value) => {
+      .then(async (value) => {
         if (!active) return;
         setData(value);
-        const paths = value.businesses.map((b) => b.logo_path).filter((x): x is string => !!x);
+        const own = await loadProfile(userId);
+        if (!active) return;
+        setProfile(own);
+        const paths = [
+          ...value.businesses.map((b) => b.logo_path),
+          own?.logo_path,
+        ].filter((x): x is string => !!x);
         signedLogoUrls(paths)
           .then((urls) => active && setLogoUrls(urls))
           .catch(() => {});
@@ -382,6 +393,34 @@ export default function App() {
       }
       setPopup({ type: "promotion-form", previous: p });
     } else setPopup({ type: "confirm", promotion: p, action: "publish" });
+  };
+  const persistProfile = async (p: Profile, logo?: Blob | null) => {
+    if (!userId) throw new Error("Συνδέσου ξανά.");
+    try {
+      if (demoMode) {
+        let path = p.logo_path;
+        if (logo !== undefined) {
+          path = logo ? "demo/profile" : null;
+          if (logo) setLogoUrls((m) => ({ ...m, "demo/profile": URL.createObjectURL(logo) }));
+        }
+        setProfile({ ...p, logo_path: path });
+      } else {
+        const oldPath = profile?.logo_path || null;
+        let path = oldPath;
+        if (logo !== undefined) path = logo ? await uploadLogo(userId, "profile", logo) : null;
+        const saved = await saveProfile({ ...p, user_id: userId, logo_path: path }, !!profile);
+        if (oldPath && oldPath !== path) await removeLogoFile(oldPath);
+        if (path && path !== oldPath) {
+          const urls = await signedLogoUrls([path]);
+          setLogoUrls((m) => ({ ...m, ...urls }));
+        }
+        setProfile(saved);
+      }
+      setPopup(null);
+      setToast("Τα στοιχεία σου αποθηκεύτηκαν.");
+    } catch (e) {
+      throw new Error(friendlyError(e));
+    }
   };
   const persistBusiness = async (b: Business, logo?: Blob | null) => {
     const expectedUser = userId;
@@ -630,6 +669,16 @@ export default function App() {
     view === "business"
       ? activeBusiness?.name || "Επιχείρηση"
       : navigation.find((n) => n.id === view)?.title;
+  const profileLogo = profile?.logo_path ? logoUrls[profile.logo_path] : undefined;
+  const initial = (profile?.full_name || profile?.company_name || session?.user.email || "Ε").trim().charAt(0).toLocaleUpperCase("el");
+  const ProfileBadge = ({ className }: { className: string }) =>
+    profileLogo ? (
+      <span className={`${className} has-logo`}>
+        <img src={profileLogo} alt="" />
+      </span>
+    ) : (
+      <span className={className}>{initial}</span>
+    );
   const logoOf = (businessId: string | undefined) => {
     const path = data.businesses.find((b) => b.id === businessId)?.logo_path;
     return path ? logoUrls[path] : undefined;
@@ -670,6 +719,8 @@ export default function App() {
         meta,
         logoUrl: (id) => logoOf(id),
         filterSummary: filterSummary(),
+        owner: profile,
+        ownerLogoUrl: profileLogo,
         today,
       });
     } catch {
@@ -722,13 +773,26 @@ export default function App() {
           <p>Το ιστορικό και το επόμενο βήμα, πάντα μαζί.</p>
         </div>
         <div className="profile">
-          <div className="profile-avatar">Ε</div>
-          <div>
-            <strong>Ο λογαριασμός μου</strong>
-            <small>
-              {demoMode ? "Δοκιμαστική προβολή" : "Προσωπικός χώρος"}
-            </small>
-          </div>
+          <button
+            className="profile-open"
+            onClick={() => {
+              setMobileOpen(false);
+              setPopup({ type: "profile" });
+            }}
+            aria-label="Ο λογαριασμός μου: στοιχεία και logo"
+          >
+            <ProfileBadge className="profile-avatar" />
+            <div>
+              <strong>{profile?.full_name || profile?.company_name || "Ο λογαριασμός μου"}</strong>
+              <small>
+                {profile?.company_name && profile.full_name
+                  ? profile.company_name
+                  : demoMode
+                    ? "Δοκιμαστική προβολή"
+                    : "Στοιχεία & logo"}
+              </small>
+            </div>
+          </button>
           {!demoMode && (
             <button
               className="icon-button"
@@ -770,7 +834,13 @@ export default function App() {
                 <RefreshCw size={16} />
               </button>
             )}
-            <div className="small-profile">Ε</div>
+            <button
+              className="small-profile-button"
+              onClick={() => setPopup({ type: "profile" })}
+              aria-label="Ο λογαριασμός μου"
+            >
+              <ProfileBadge className="small-profile" />
+            </button>
           </div>
         </header>
         {demoMode && (
@@ -1205,6 +1275,16 @@ export default function App() {
           today={today}
           onSave={persistPromotion}
           onCreateCategory={createCategory}
+          onClose={() => setPopup(null)}
+        />
+      )}
+      {popup?.type === "profile" && (
+        <ProfileForm
+          initial={profile}
+          userId={userId!}
+          loginEmail={demoMode ? "demo@webtag.gr" : session?.user.email || ""}
+          logoUrl={profileLogo}
+          onSave={persistProfile}
           onClose={() => setPopup(null)}
         />
       )}

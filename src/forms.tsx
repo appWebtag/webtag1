@@ -14,6 +14,7 @@ import {
   kindLabels,
   type Business,
   type Category,
+  type Profile,
   type Promotion,
   type PromotionKind,
   type PromotionStatus,
@@ -74,6 +75,177 @@ export function Modal({
     </dialog>
   );
 }
+export function LogoPicker({
+  initialUrl,
+  onChange,
+  hint = "Τετράγωνη εικόνα, ιδανικά με διάφανο φόντο. Αποθηκεύεται ιδιωτικά.",
+}: {
+  initialUrl?: string;
+  onChange: (logo: Blob | null) => void;
+  hint?: string;
+}) {
+  const [preview, setPreview] = useState<string | undefined>(initialUrl);
+  const [error, setError] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  useEffect(
+    () => () => {
+      if (preview?.startsWith("blob:")) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
+  const pick = async (file: File | undefined) => {
+    setError("");
+    if (!file) return;
+    if (!/^image\/(png|jpeg|webp|gif|svg\+xml)$/.test(file.type) || file.size > 8 * 1024 * 1024) {
+      setError("Διάλεξε εικόνα PNG, JPG, WEBP ή SVG έως 8 MB.");
+      return;
+    }
+    try {
+      const png = await logoToPng(file);
+      onChange(png);
+      setPreview(URL.createObjectURL(png));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <>
+      <div className="logo-field">
+        <div className="logo-preview">
+          {preview ? <img src={preview} alt="Logo" /> : <span>Χωρίς logo</span>}
+        </div>
+        <div className="logo-actions">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+            hidden
+            onChange={(e) => {
+              pick(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          <button type="button" className="button secondary small" onClick={() => fileRef.current?.click()}>
+            {preview ? "Αλλαγή logo" : "Επιλογή logo"}
+          </button>
+          {preview && (
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={() => {
+                onChange(null);
+                setPreview(undefined);
+              }}
+            >
+              Αφαίρεση
+            </button>
+          )}
+          <small>{hint}</small>
+        </div>
+      </div>
+      {error && <small className="form-error">{error}</small>}
+    </>
+  );
+}
+export function ProfileForm({
+  initial,
+  userId,
+  loginEmail,
+  logoUrl,
+  onSave,
+  onClose,
+}: {
+  initial: Profile | null;
+  userId: string;
+  loginEmail: string;
+  logoUrl?: string;
+  onSave: (p: Profile, logo?: Blob | null) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [values, setValues] = useState<Profile>(
+    () =>
+      initial || {
+        user_id: userId,
+        full_name: "",
+        company_name: "",
+        phone: "",
+        email: loginEmail,
+        website: "",
+        address: "",
+        vat_number: "",
+        logo_path: null,
+      },
+  );
+  const [logo, setLogo] = useState<Blob | null | undefined>(undefined);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const update = (key: keyof Profile, value: string) => setValues((v) => ({ ...v, [key]: value }));
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const trimmed = Object.fromEntries(
+        Object.entries(values).map(([k, v]) => [k, typeof v === "string" ? v.trim() : v]),
+      ) as unknown as Profile;
+      await onSave(trimmed, logo);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const fields: [keyof Profile, string, string, string?][] = [
+    ["full_name", "Ονοματεπώνυμο", "name"],
+    ["company_name", "Επωνυμία", "organization"],
+    ["phone", "Τηλέφωνο", "tel", "tel"],
+    ["email", "Email επικοινωνίας", "email", "email"],
+    ["website", "Ιστοσελίδα", "url", "url"],
+    ["vat_number", "ΑΦΜ", "off"],
+  ];
+  return (
+    <Modal title="Ο λογαριασμός μου" description={`Σύνδεση ως ${loginEmail}`} onClose={onClose} busy={busy}>
+      <form onSubmit={submit}>
+        <div className="form-grid">
+          <div className="field full">
+            <span>Logo</span>
+            <LogoPicker initialUrl={logoUrl} onChange={setLogo} hint="Εμφανίζεται στο μενού και στις αναφορές PDF. Αποθηκεύεται ιδιωτικά." />
+          </div>
+          {fields.map(([key, label, auto, type]) => (
+            <label className="field" key={key}>
+              {label}
+              <input
+                type={type || "text"}
+                autoComplete={auto}
+                maxLength={key === "vat_number" ? 30 : key === "phone" ? 40 : 250}
+                value={(values[key] as string) || ""}
+                onChange={(e) => update(key, e.target.value)}
+              />
+            </label>
+          ))}
+          <label className="field full">
+            Διεύθυνση
+            <input maxLength={300} autoComplete="street-address" value={values.address} onChange={(e) => update("address", e.target.value)} />
+          </label>
+        </div>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="form-actions">
+          <button type="button" className="button secondary" onClick={onClose} disabled={busy}>
+            Άκυρο
+          </button>
+          <button className="button primary" disabled={busy}>
+            {busy ? "Αποθήκευση…" : "Αποθήκευση στοιχείων"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 export function BusinessForm({
   initial,
   userId,
@@ -89,30 +261,6 @@ export function BusinessForm({
   onClose: () => void;
 }) {
   const [logo, setLogo] = useState<Blob | null | undefined>(undefined);
-  const [preview, setPreview] = useState<string | undefined>(logoUrl);
-  const [logoError, setLogoError] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
-  useEffect(
-    () => () => {
-      if (preview?.startsWith("blob:")) URL.revokeObjectURL(preview);
-    },
-    [preview],
-  );
-  const pickLogo = async (file: File | undefined) => {
-    setLogoError("");
-    if (!file) return;
-    if (!/^image\/(png|jpeg|webp|gif|svg\+xml)$/.test(file.type) || file.size > 8 * 1024 * 1024) {
-      setLogoError("Διάλεξε εικόνα PNG, JPG, WEBP ή SVG έως 8 MB.");
-      return;
-    }
-    try {
-      const png = await logoToPng(file);
-      setLogo(png);
-      setPreview(URL.createObjectURL(png));
-    } catch (e) {
-      setLogoError((e as Error).message);
-    }
-  };
   const [values, setValues] = useState(
     () =>
       initial || {
@@ -176,40 +324,7 @@ export function BusinessForm({
           </label>
           <div className="field full">
             <span>Logo</span>
-            <div className="logo-field">
-              <div className="logo-preview">
-                {preview ? <img src={preview} alt="Logo πελάτη" /> : <span>Χωρίς logo</span>}
-              </div>
-              <div className="logo-actions">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
-                  hidden
-                  onChange={(e) => {
-                    pickLogo(e.target.files?.[0]);
-                    e.target.value = "";
-                  }}
-                />
-                <button type="button" className="button secondary small" onClick={() => fileRef.current?.click()}>
-                  {preview ? "Αλλαγή logo" : "Επιλογή logo"}
-                </button>
-                {preview && (
-                  <button
-                    type="button"
-                    className="button secondary small"
-                    onClick={() => {
-                      setLogo(null);
-                      setPreview(undefined);
-                    }}
-                  >
-                    Αφαίρεση
-                  </button>
-                )}
-                <small>Τετράγωνη εικόνα, ιδανικά με διάφανο φόντο. Αποθηκεύεται ιδιωτικά.</small>
-              </div>
-            </div>
-            {logoError && <small className="form-error">{logoError}</small>}
+            <LogoPicker initialUrl={logoUrl} onChange={setLogo} />
           </div>
           <label className="field full">
             Υπεύθυνος επικοινωνίας

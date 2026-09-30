@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Business, Category, CategoryLink, Data, Promotion } from "./domain";
+import type { Business, Category, CategoryLink, Data, Profile, Promotion } from "./domain";
 
 export const demoMode = import.meta.env.VITE_DEMO_MODE === "true";
 const url = import.meta.env.VITE_SUPABASE_URL?.trim();
@@ -165,7 +165,7 @@ export async function setPromotionCategories(promotionId: string, categoryIds: s
 
 // ---------- client logos (private Storage bucket, shown through signed links) ----------
 const LOGO_BUCKET = "business-logos";
-export async function uploadLogo(userId: string, businessId: string, png: Blob): Promise<string> {
+export async function uploadLogo(userId: string, businessId: string | "profile", png: Blob): Promise<string> {
   if (!supabase) throw new Error("Not configured");
   const path = `${userId}/${businessId}-${Date.now()}.png`;
   const { error } = await supabase.storage.from(LOGO_BUCKET).upload(path, png, {
@@ -187,4 +187,32 @@ export async function signedLogoUrls(paths: string[]): Promise<Record<string, st
   const out: Record<string, string> = {};
   for (const item of data || []) if (item.path && item.signedUrl) out[item.path] = item.signedUrl;
   return out;
+}
+
+// ---------- the user's own profile ----------
+export async function loadProfile(userId: string): Promise<Profile | null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase.from("profiles").select("*").eq("user_id", userId).maybeSingle();
+  if (error) return null; // table not there yet: the rest of the app still works
+  return data as Profile | null;
+}
+export async function saveProfile(profile: Profile, exists: boolean): Promise<Profile> {
+  if (!supabase) throw new Error("Not configured");
+  const { user_id, ...fields } = profile;
+  const clean = {
+    full_name: fields.full_name,
+    company_name: fields.company_name,
+    phone: fields.phone,
+    email: fields.email,
+    website: fields.website,
+    address: fields.address,
+    vat_number: fields.vat_number,
+    logo_path: fields.logo_path,
+  };
+  const query = exists
+    ? supabase.from("profiles").update({ ...clean, updated_at: new Date().toISOString() }).eq("user_id", user_id)
+    : supabase.from("profiles").insert({ user_id, ...clean });
+  const { data, error } = await query.select().single();
+  if (error) throw error;
+  return data as Profile;
 }

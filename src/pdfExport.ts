@@ -10,6 +10,7 @@ import {
   phase,
   type Business,
   type Data,
+  type Profile,
   type Promotion,
 } from "./domain";
 import { adsForLinks, costPer, count, money, resultValues, type MetaData, type MetaResult } from "./metaCore";
@@ -41,6 +42,8 @@ export interface ExportOptions {
   logoUrl: (businessId: string) => string | undefined;
   filterSummary: string;
   today: string;
+  owner?: Profile | null;
+  ownerLogoUrl?: string;
 }
 
 export async function exportPromotionsPdf(o: ExportOptions): Promise<void> {
@@ -61,7 +64,11 @@ export async function exportPromotionsPdf(o: ExportOptions): Promise<void> {
   const resultOf = (p: Promotion): MetaResult | undefined => o.meta.results.find((r) => r.promotion_id === p.id);
 
   // ---- header ----
-  const brand = await imageDataUrl("/logo.png", 200);
+  const brand = (o.ownerLogoUrl && (await imageDataUrl(o.ownerLogoUrl, 200))) || (await imageDataUrl("/logo.png", 200));
+  const ownerName = o.owner?.company_name || o.owner?.full_name || "WebTag Net Solutions";
+  const contact = [o.owner?.full_name && o.owner?.company_name ? o.owner.full_name : "", o.owner?.phone, o.owner?.email, o.owner?.website]
+    .filter(Boolean)
+    .join(" · ");
   doc.setFillColor(...CHARCOAL);
   doc.rect(0, 0, W, 26, "F");
   if (brand) doc.addImage(brand, "PNG", M, 4, 18, 18);
@@ -72,7 +79,8 @@ export async function exportPromotionsPdf(o: ExportOptions): Promise<void> {
   doc.setFont("DejaVu", "normal");
   doc.setFontSize(9);
   doc.setTextColor(197, 199, 198);
-  doc.text(`WebTag Net Solutions · Δημιουργήθηκε ${dateLabel(o.today, true)}`, M + 22, 18.5);
+  doc.text(`${ownerName} · Δημιουργήθηκε ${dateLabel(o.today, true)}`, M + 22, 18.5);
+  if (contact) doc.text(contact, W - M, 18.5, { align: "right" });
   doc.setTextColor(133, 191, 202);
   doc.text(doc.splitTextToSize(o.filterSummary, W - M * 2 - 22)[0] || "", M + 22, 23);
 
