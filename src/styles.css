@@ -2561,3 +2561,72 @@ button.chip:hover {
   border-radius: 50%;
   display: flex;
 }
+
+/* ---------- several Meta ad accounts ---------- */
+.meta-accounts {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.meta-accounts li {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 16px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.meta-accounts li:first-child {
+  border-top: 0;
+}
+.meta-account-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 180px;
+}
+.meta-account-main strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3a3835;
+}
+.meta-account-main small {
+  font-size: 10px;
+  color: #9a968f;
+}
+.meta-account-status {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: 11px;
+  min-width: 190px;
+}
+.meta-account-status span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.meta-account-status small {
+  color: #9a968f;
+  font-size: 10px;
+}
+.meta-account-confirm {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: #6b6861;
+  flex-basis: 100%;
+}
+.meta-account-picker h4 {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  color: var(--charcoal);
+}
+.meta-account-picker .field {
+  margin-bottom: 10px;
+}

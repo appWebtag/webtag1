@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, CircleCheck, Link2, RefreshCw, EyeOff } from "lucide-react";
+import { CircleAlert, CircleCheck, Link2, RefreshCw, EyeOff, Plus, Unplug } from "lucide-react";
 import type { Business } from "./domain";
 import {
   dateTimeLabel,
@@ -39,7 +39,8 @@ export default function MetaView({
   businesses,
   demo,
   busy,
-  onSaveAccount,
+  onAddAccount,
+  onRemoveAccount,
   onSync,
   onReview,
 }: {
@@ -48,7 +49,8 @@ export default function MetaView({
   businesses: Business[];
   demo: boolean;
   busy: boolean;
-  onSaveAccount: (adAccountId: string) => Promise<void>;
+  onAddAccount: (adAccountId: string) => Promise<void>;
+  onRemoveAccount: (adAccountId: string) => Promise<void>;
   onSync: () => Promise<void>;
   onReview: (adIds: string[], businessId: string | null) => Promise<void>;
 }) {
@@ -58,6 +60,7 @@ export default function MetaView({
   const [choice, setChoice] = useState<Record<string, string>>({});
   const [showAssigned, setShowAssigned] = useState(false);
   const [error, setError] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
   useEffect(() => {
     if (demo) {
@@ -73,11 +76,11 @@ export default function MetaView({
     };
   }, [demo]);
 
-  const account = meta.account;
-  const currentAds = useMemo(
-    () => meta.ads.filter((a) => !account || a.account_id === account.ad_account_id),
-    [meta.ads, account],
-  );
+  const accounts = meta.accounts;
+  const connected = useMemo(() => new Set(accounts.map((a) => a.ad_account_id)), [accounts]);
+  const currentAds = useMemo(() => meta.ads.filter((a) => connected.has(a.account_id)), [meta.ads, connected]);
+  const running = accounts.some((a) => a.sync_status === "running");
+  const available = (status?.accounts || []).filter((a) => !connected.has(a.id));
   const pending = groupByCampaign(currentAds.filter((a) => a.review_state === "new"));
   const assigned = groupByCampaign(currentAds.filter((a) => a.review_state !== "new"));
   const businessName = (id: string | null) => businesses.find((b) => b.id === id)?.name || "—";
@@ -96,7 +99,14 @@ export default function MetaView({
       setError("Ο κωδικός λογαριασμού έχει τη μορφή act_ και αριθμούς.");
       return;
     }
-    run(() => onSaveAccount(clean));
+    if (connected.has(clean)) {
+      setError("Αυτός ο λογαριασμός είναι ήδη συνδεδεμένος.");
+      return;
+    }
+    run(async () => {
+      await onAddAccount(clean);
+      setManualId("");
+    });
   };
 
   return (
@@ -109,8 +119,8 @@ export default function MetaView({
           </h1>
           <p>Τα στατιστικά των πληρωμένων διαφημίσεων, αυτόματα κάθε πρωί.</p>
         </div>
-        {account && (
-          <button className="button primary" onClick={() => run(onSync)} disabled={busy || account.sync_status === "running"}>
+        {accounts.length > 0 && (
+          <button className="button primary" onClick={() => run(onSync)} disabled={busy || running}>
             <RefreshCw size={16} />
             {busy ? "Συγχρονισμός…" : "Συγχρονισμός τώρα"}
           </button>
@@ -155,80 +165,96 @@ export default function MetaView({
               {statusError}
             </div>
           )}
-          {account ? (
-            <dl className="promotion-meta meta-account">
-              <div>
-                <dt>Λογαριασμός</dt>
-                <dd>
-                  {account.name || account.ad_account_id}
-                  <small>{account.ad_account_id}</small>
-                </dd>
-              </div>
-              <div>
-                <dt>Κατάσταση</dt>
-                <dd className={`sync-${account.sync_status}`}>
-                  {account.sync_status === "ok" ? <CircleCheck size={14} /> : <CircleAlert size={14} />}
-                  {syncLabels[account.sync_status]}
-                </dd>
-              </div>
-              <div>
-                <dt>Τελευταίος επιτυχημένος συγχρονισμός</dt>
-                <dd>{dateTimeLabel(account.last_success_at)}</dd>
-              </div>
-              <div>
-                <dt>Νόμισμα · ζώνη ώρας</dt>
-                <dd>
-                  {account.currency || "—"} · {account.timezone_name || "—"}
-                </dd>
-              </div>
-            </dl>
-          ) : null}
-          {account?.last_error && account.sync_status !== "ok" && (
-            <p className="form-error">Μήνυμα Meta: {account.last_error}</p>
-          )}
-          {(!account || (status?.accounts.length ?? 0) > 1) && (
-            <div className="meta-account-picker">
-              {status?.accounts.length ? (
-                <label className="field">
-                  {account ? "Αλλαγή λογαριασμού" : "Επίλεξε διαφημιστικό λογαριασμό"}
-                  <select
-                    value={account?.ad_account_id || ""}
-                    onChange={(e) => e.target.value && pickAccount(e.target.value)}
-                    disabled={busy}
-                  >
-                    <option value="">Επιλογή…</option>
-                    {status.accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name} ({a.id}, {a.currency})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : (
-                !account && (
-                  <form
-                    className="inline-form"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      pickAccount(manualId);
-                    }}
-                  >
-                    <label className="field">
-                      Κωδικός διαφημιστικού λογαριασμού (act_…)
-                      <input value={manualId} onChange={(e) => setManualId(e.target.value)} placeholder="act_1234567890" />
-                    </label>
-                    <button className="button secondary" disabled={busy}>
-                      Αποθήκευση
+          {accounts.length > 0 && (
+            <ul className="meta-accounts">
+              {accounts.map((acc) => (
+                <li key={acc.ad_account_id}>
+                  <div className="meta-account-main">
+                    <strong>{acc.name || acc.ad_account_id}</strong>
+                    <small>
+                      {acc.ad_account_id}
+                      {acc.currency ? ` · ${acc.currency}` : ""}
+                      {acc.timezone_name ? ` · ${acc.timezone_name}` : ""}
+                    </small>
+                    {acc.last_error && acc.sync_status !== "ok" && <small className="form-error">Μήνυμα Meta: {acc.last_error}</small>}
+                  </div>
+                  <div className={`meta-account-status sync-${acc.sync_status}`}>
+                    {acc.sync_status === "ok" ? <CircleCheck size={14} /> : <CircleAlert size={14} />}
+                    <span>
+                      {syncLabels[acc.sync_status]}
+                      <small>Τελευταίος: {dateTimeLabel(acc.last_success_at)}</small>
+                    </span>
+                  </div>
+                  {confirmRemove === acc.ad_account_id ? (
+                    <div className="meta-account-confirm">
+                      <span>Αποσύνδεση; Δεν θα συγχρονίζεται πια. Όσα έχουν ήδη αποθηκευτεί μένουν στο ιστορικό.</span>
+                      <button
+                        className="button danger small"
+                        disabled={busy}
+                        onClick={() =>
+                          run(async () => {
+                            await onRemoveAccount(acc.ad_account_id);
+                            setConfirmRemove(null);
+                          })
+                        }
+                      >
+                        Αποσύνδεση
+                      </button>
+                      <button className="button secondary small" disabled={busy} onClick={() => setConfirmRemove(null)}>
+                        Άκυρο
+                      </button>
+                    </div>
+                  ) : (
+                    <button className="button secondary small" disabled={busy} onClick={() => setConfirmRemove(acc.ad_account_id)}>
+                      <Unplug size={14} />
+                      Αποσύνδεση
                     </button>
-                  </form>
-                )
-              )}
-            </div>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
+          <div className="meta-account-picker">
+            <h4>{accounts.length ? "Προσθήκη κι άλλου λογαριασμού" : "Πρόσθεσε διαφημιστικό λογαριασμό"}</h4>
+            {available.length > 0 && (
+              <label className="field">
+                Από τους λογαριασμούς που βλέπει η σύνδεση με τη Meta
+                <select value="" onChange={(e) => e.target.value && pickAccount(e.target.value)} disabled={busy}>
+                  <option value="">Διάλεξε λογαριασμό…</option>
+                  {available.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.id}, {a.currency})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <form
+              className="inline-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                pickAccount(manualId);
+              }}
+            >
+              <label className="field">
+                {available.length ? "ή γράψε τον αριθμό του λογαριασμού" : "Αριθμός διαφημιστικού λογαριασμού (Ad account ID)"}
+                <input
+                  value={manualId}
+                  onChange={(e) => setManualId(e.target.value.replace(/\s|-/g, ""))}
+                  placeholder="π.χ. 123456789012345"
+                  inputMode="numeric"
+                />
+              </label>
+              <button className="button secondary" disabled={busy || !manualId.trim()}>
+                <Plus size={15} />
+                Προσθήκη
+              </button>
+            </form>
+          </div>
         </div>
       </section>
 
-      {account && (
+      {accounts.length > 0 && (
         <section className="panel">
           <div className="section-heading">
             <div>

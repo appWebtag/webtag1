@@ -120,7 +120,7 @@ export function PromotionMetaPanel({
     };
   }, [result?.fetched_at, adIds.join(","), userId, demo]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!meta.account)
+  if (!meta.accounts.length)
     return (
       <div className="meta-panel muted">
         <BarChart3 size={16} />
@@ -133,7 +133,8 @@ export function PromotionMetaPanel({
 
   // Campaigns and ads: this client's first, then unassigned, then the rest.
   const rank = (a: MetaAd) => (a.business_id === promotion.business_id ? 0 : a.review_state === "new" ? 1 : 2);
-  const ads = meta.ads.filter((a) => a.account_id === meta.account!.ad_account_id).sort((a, b) => rank(a) - rank(b));
+  const connected = new Set(meta.accounts.map((a) => a.ad_account_id));
+  const ads = meta.ads.filter((a) => connected.has(a.account_id)).sort((a, b) => rank(a) - rank(b));
   const campaigns = new Map<string, { name: string; rank: number }>();
   for (const a of ads)
     if (a.campaign_id && !campaigns.has(a.campaign_id)) campaigns.set(a.campaign_id, { name: a.campaign_name || a.campaign_id, rank: rank(a) });
@@ -343,7 +344,7 @@ export function BusinessMetaPanel({
   const [campaignPick, setCampaignPick] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  if (!meta.account)
+  if (!meta.accounts.length)
     return (
       <section className="panel">
         <div className="section-heading">
@@ -368,7 +369,8 @@ export function BusinessMetaPanel({
       setBusy(false);
     }
   };
-  const ads = meta.ads.filter((a) => a.account_id === meta.account!.ad_account_id);
+  const connected = new Set(meta.accounts.map((a) => a.ad_account_id));
+  const ads = meta.ads.filter((a) => connected.has(a.account_id));
   const ownPages = meta.pages.filter((p) => p.business_id === business.id);
   const freePages = meta.pages.filter((p) => !p.business_id);
   const otherPages = meta.pages.filter((p) => p.business_id && p.business_id !== business.id);

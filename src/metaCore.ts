@@ -76,7 +76,7 @@ export interface MetaRun {
 }
 export interface MetaData {
   pages: MetaPage[];
-  account: MetaAccount | null;
+  accounts: MetaAccount[];
   ads: MetaAd[];
   links: MetaLink[];
   results: MetaResult[];

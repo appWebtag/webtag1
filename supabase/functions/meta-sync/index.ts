@@ -167,147 +167,218 @@ async function listAds(act: string): Promise<any[]> {
   }
 }
 
+// One ad account: account info, ads, Pages, daily results. Returns counts.
+async function syncAccount(db: SupabaseClient, userId: string, account: any, now: string) {
+  const act = account.ad_account_id as string;
+  const info = await metaGet(act, { fields: "name,currency,timezone_name,account_status" });
+  const tz = info.timezone_name || "Europe/Athens";
+  await db.from("meta_accounts").update({
+    name: info.name ?? null, currency: info.currency ?? null, timezone_name: tz, account_status: info.account_status ?? null,
+  }).eq("user_id", userId).eq("ad_account_id", act);
+
+  // 1) Ads (new ones appear as "new" for the user to assign — nothing is assigned automatically).
+  const ads = await listAds(act);
+  const rows = ads.map((a) => adRow(userId, act, a, now));
+  for (const part of chunk(rows, 500)) {
+    const { error } = await db.from("meta_ads").upsert(part, { onConflict: "user_id,ad_id" });
+    if (error) throw error;
+  }
+  // Pages seen in the ads: remember them (new ones only), with their names when Meta gives them.
+  const pageIds = [...new Set(rows.map((r) => r.page_id).filter((x): x is string => !!x))];
+  if (pageIds.length) {
+    const { error } = await db.from("meta_pages").upsert(
+      pageIds.map((page_id) => ({ user_id: userId, page_id })),
+      { onConflict: "user_id,page_id", ignoreDuplicates: true },
+    );
+    if (error) throw error;
+    for (const ids of chunk(pageIds, 50)) {
+      const names = await metaGet("", { ids: ids.join(","), fields: "name" }).catch(() => ({}));
+      for (const [id, page] of Object.entries(names || {}))
+        if ((page as any)?.name) await db.from("meta_pages").update({ name: (page as any).name }).eq("user_id", userId).eq("page_id", id);
+    }
+  }
+
+  // 2) Daily results per ad (first sync: 180 days; later: the last 28 days again, for late conversions).
+  const today = dayIn(tz);
+  const since = addDays(today, -(account.last_success_at ? RECHECK_DAYS : INITIAL_DAYS));
+  const daily = await insights(act + "/insights", {
+    level: "ad", time_increment: "1", use_unified_attribution_setting: "true",
+    time_range: JSON.stringify({ since, until: today }),
+  }, ["ad_id", "date_start"]);
+  const dailyRows = daily.rows.filter((r) => r.ad_id && r.date_start).map((r) => ({
+    user_id: userId, ad_id: String(r.ad_id), date: r.date_start,
+    currency: r.account_currency || info.currency || "EUR",
+    ...metrics(r, daily.unavailable), fetched_at: now,
+  }));
+  for (const part of chunk(dailyRows, 500)) {
+    const { error } = await db.from("meta_insights_daily").upsert(part, { onConflict: "user_id,ad_id,date" });
+    if (error) throw error;
+  }
+  // Ads that had results but are not in the ads list (archived/deleted) — fetch their names once.
+  const known = new Set(rows.map((r) => r.ad_id));
+  const { data: stored } = await db.from("meta_ads").select("ad_id").eq("user_id", userId);
+  for (const x of stored || []) known.add(x.ad_id);
+  const missing = [...new Set(dailyRows.map((r) => r.ad_id))].filter((id) => !known.has(id));
+  for (const ids of chunk(missing, 50)) {
+    const found = await metaGet("", { ids: ids.join(","), fields: AD_FIELDS }).catch(() => ({}));
+    const extra = Object.values(found || {}).map((a: any) => adRow(userId, act, a, now));
+    if (extra.length) await db.from("meta_ads").upsert(extra, { onConflict: "user_id,ad_id" });
+  }
+  return { ads: rows.length, days: dailyRows.length, today, currency: info.currency ?? null };
+}
+
+function addActions(a: Record<string, number> | null, b: Record<string, number> | null) {
+  if (!a) return b;
+  if (!b) return a;
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = (out[k] || 0) + v;
+  return out;
+}
+const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
+
+// 3) Totals per linked promotion, over its own dates. Within one ad account Meta de-duplicates
+// (correct reach); across several accounts the totals are added and reach is left empty.
+async function promotionTotals(db: SupabaseClient, userId: string, connected: string[], today: string, now: string) {
+  const [{ data: links }, { data: promos }, { data: results }, { data: allAds }] = await Promise.all([
+    db.from("promotion_meta_links").select("promotion_id,level,meta_id").eq("user_id", userId),
+    db.from("promotions").select("id,starts_on,ends_on,published_on,status").eq("user_id", userId),
+    db.from("meta_promotion_results").select("promotion_id,fetched_at,until").eq("user_id", userId),
+    db.from("meta_ads").select("ad_id,campaign_id,account_id").eq("user_id", userId),
+  ]);
+  const byPromotion = new Map<string, { level: string; meta_id: string }[]>();
+  for (const l of links || []) byPromotion.set(l.promotion_id, [...(byPromotion.get(l.promotion_id) || []), l]);
+  const unlinked = (results || []).filter((r) => !byPromotion.has(r.promotion_id)).map((r) => r.promotion_id);
+  if (unlinked.length) await db.from("meta_promotion_results").delete().eq("user_id", userId).in("promotion_id", unlinked);
+
+  let updated = 0;
+  for (const p of promos || []) {
+    const own = byPromotion.get(p.id);
+    if (!own || p.status === "cancelled") continue;
+    const start = p.published_on || p.starts_on;
+    if (start > today) continue;
+    const until = p.ends_on < today ? p.ends_on : today;
+    const previous = (results || []).find((r) => r.promotion_id === p.id);
+    const settled = addDays(p.ends_on, FINAL_AFTER_DAYS) < today;
+    if (settled && previous && previous.until === until && previous.fetched_at.slice(0, 10) > addDays(p.ends_on, FINAL_AFTER_DAYS)) continue;
+    // Ads of this promotion, grouped by the connected ad account they belong to.
+    const byAccount = new Map<string, Set<string>>();
+    let adCount = 0;
+    for (const l of own) {
+      const hits = l.level === "ad"
+        ? (allAds || []).filter((a) => a.ad_id === l.meta_id)
+        : (allAds || []).filter((a) => a.campaign_id === l.meta_id);
+      for (const a of hits) {
+        if (!connected.includes(a.account_id)) continue;
+        const set = byAccount.get(a.account_id) || new Set<string>();
+        set.add(a.ad_id);
+        byAccount.set(a.account_id, set);
+      }
+    }
+    const requests: { act: string; filtering: unknown[] }[] = [];
+    for (const [act, ids] of byAccount) {
+      requests.push({ act, filtering: [{ field: "ad.id", operator: "IN", value: [...ids] }] });
+      adCount += ids.size;
+    }
+    const campaignOnly = own.filter((l) => l.level === "campaign" && !(allAds || []).some((a) => a.campaign_id === l.meta_id));
+    if (campaignOnly.length)
+      for (const act of connected)
+        requests.push({ act, filtering: [{ field: "campaign.id", operator: "IN", value: campaignOnly.map((l) => l.meta_id) }] });
+    if (!requests.length) continue;
+
+    let total: any = null;
+    let currency: string | null = null;
+    const unavailable = new Set<string>();
+    let delivered = 0;
+    for (const r of requests) {
+      const res = await insights(r.act + "/insights", {
+        level: "account", use_unified_attribution_setting: "true",
+        time_range: JSON.stringify({ since: start, until }), filtering: JSON.stringify(r.filtering),
+      });
+      res.unavailable.forEach((f) => unavailable.add(f));
+      const row = res.rows[0];
+      if (row) delivered++;
+      const m = metrics(row, res.unavailable);
+      currency = currency || row?.account_currency || null;
+      total = total
+        ? {
+            spend: plus(total.spend, m.spend), impressions: plus(total.impressions, m.impressions), reach: null,
+            clicks: plus(total.clicks, m.clicks), link_clicks: plus(total.link_clicks, m.link_clicks),
+            actions: addActions(total.actions, m.actions),
+          }
+        : m;
+    }
+    // Reach cannot be added across accounts (the same person would be counted twice).
+    if (delivered > 1) {
+      total.reach = null;
+      unavailable.add("reach");
+    }
+    const { error } = await db.from("meta_promotion_results").upsert({
+      promotion_id: p.id, user_id: userId, since: start, until, currency,
+      ...total, unavailable: [...unavailable], ad_count: adCount, fetched_at: now,
+    }, { onConflict: "promotion_id" });
+    if (error) throw error;
+    updated++;
+  }
+  return updated;
+}
+
 export async function syncUser(db: SupabaseClient, userId: string, trigger: "manual" | "daily") {
-  const { data: account, error: accErr } = await db.from("meta_accounts").select("*").eq("user_id", userId).maybeSingle();
+  const { data: accounts, error: accErr } = await db.from("meta_accounts").select("*").eq("user_id", userId);
   if (accErr) throw accErr;
-  if (!account) return { status: "error", message: "Δεν έχει επιλεγεί διαφημιστικός λογαριασμός." };
+  if (!accounts?.length) return { status: "error", message: "Δεν έχει προστεθεί διαφημιστικός λογαριασμός." };
 
   const recent = await db.from("meta_sync_runs").select("id")
     .eq("user_id", userId).eq("status", "running").gt("started_at", new Date(Date.now() - 5 * 60000).toISOString());
   if (recent.data?.length) return { status: "running", message: "Ο συγχρονισμός τρέχει ήδη." };
 
-  const { data: run } = await db.from("meta_sync_runs").insert({ user_id: userId, trigger }).select("id").single();
-  const startedAt = new Date().toISOString();
-  await db.from("meta_accounts").update({ sync_status: "running", last_attempt_at: startedAt }).eq("user_id", userId);
+  const { data: run } = await db.from("meta_sync_runs").insert({ user_id: userId, trigger, accounts: accounts.length }).select("id").single();
+  const now = new Date().toISOString();
+  await db.from("meta_accounts").update({ sync_status: "running", last_attempt_at: now }).eq("user_id", userId);
 
+  let ads = 0, days = 0, promotions = 0;
+  const problems: string[] = [];
+  let reconnect = false;
+  let today = dayIn("Europe/Athens");
+  const okAccounts: string[] = [];
+  // Each account on its own: one failing account does not stop the others.
+  for (const account of accounts) {
+    try {
+      if (!TOKEN) throw new MetaError("Δεν έχει οριστεί το META_ACCESS_TOKEN στον server.", undefined, undefined, true);
+      const r = await syncAccount(db, userId, account, now);
+      ads += r.ads;
+      days += r.days;
+      today = r.today;
+      okAccounts.push(account.ad_account_id);
+      await db.from("meta_accounts").update({ sync_status: "ok", last_success_at: new Date().toISOString(), last_error: null })
+        .eq("user_id", userId).eq("ad_account_id", account.ad_account_id);
+    } catch (e) {
+      const again = e instanceof MetaError && e.reconnect;
+      reconnect = reconnect || again;
+      const message = e instanceof Error ? e.message.slice(0, 400) : "Άγνωστο σφάλμα";
+      problems.push(account.ad_account_id + ": " + message);
+      await db.from("meta_accounts").update({ sync_status: again ? "needs_reconnect" : "error", last_error: message })
+        .eq("user_id", userId).eq("ad_account_id", account.ad_account_id);
+    }
+  }
   try {
-    if (!TOKEN) throw new MetaError("Δεν έχει οριστεί το META_ACCESS_TOKEN στον server.", undefined, undefined, true);
-    const act = account.ad_account_id as string;
-    const info = await metaGet(act, { fields: "name,currency,timezone_name,account_status" });
-    const tz = info.timezone_name || "Europe/Athens";
-    await db.from("meta_accounts").update({
-      name: info.name ?? null, currency: info.currency ?? null, timezone_name: tz, account_status: info.account_status ?? null,
-    }).eq("user_id", userId);
-
-    // 1) Ads (new ones appear as "new" for the user to assign — nothing is assigned automatically).
-    const now = new Date().toISOString();
-    const ads = await listAds(act);
-    const rows = ads.map((a) => adRow(userId, act, a, now));
-    for (const part of chunk(rows, 500)) {
-      const { error } = await db.from("meta_ads").upsert(part, { onConflict: "user_id,ad_id" });
-      if (error) throw error;
-    }
-    // Pages seen in the ads: remember them (new ones only), with their names when Meta gives them.
-    const pageIds = [...new Set(rows.map((r) => r.page_id).filter((x): x is string => !!x))];
-    if (pageIds.length) {
-      const { error } = await db.from("meta_pages").upsert(
-        pageIds.map((page_id) => ({ user_id: userId, page_id })),
-        { onConflict: "user_id,page_id", ignoreDuplicates: true },
-      );
-      if (error) throw error;
-      for (const ids of chunk(pageIds, 50)) {
-        const names = await metaGet("", { ids: ids.join(","), fields: "name" }).catch(() => ({}));
-        for (const [id, page] of Object.entries(names || {}))
-          if ((page as any)?.name) await db.from("meta_pages").update({ name: (page as any).name }).eq("user_id", userId).eq("page_id", id);
-      }
-    }
     // Ads of a Page the user linked to a client go to that client (only ads still waiting for review).
     const { data: mapped } = await db.from("meta_pages").select("page_id,business_id").eq("user_id", userId).not("business_id", "is", null);
     for (const m of mapped || [])
       await db.from("meta_ads").update({ business_id: m.business_id, review_state: "assigned" })
         .eq("user_id", userId).eq("page_id", m.page_id).eq("review_state", "new");
-
-    // 2) Daily results per ad (re-read window so late conversions are captured; upsert = no duplicates).
-    const today = dayIn(tz);
-    const { count } = await db.from("meta_insights_daily").select("ad_id", { count: "exact", head: true }).eq("user_id", userId);
-    const since = addDays(today, -((count ?? 0) > 0 ? RECHECK_DAYS : INITIAL_DAYS));
-    const daily = await insights(act + "/insights", {
-      level: "ad", time_increment: "1", use_unified_attribution_setting: "true",
-      time_range: JSON.stringify({ since, until: today }),
-    }, ["ad_id", "date_start"]);
-    const dailyRows = daily.rows.filter((r) => r.ad_id && r.date_start).map((r) => ({
-      user_id: userId, ad_id: String(r.ad_id), date: r.date_start,
-      currency: r.account_currency || info.currency || "EUR",
-      ...metrics(r, daily.unavailable), fetched_at: now,
-    }));
-    for (const part of chunk(dailyRows, 500)) {
-      const { error } = await db.from("meta_insights_daily").upsert(part, { onConflict: "user_id,ad_id,date" });
-      if (error) throw error;
-    }
-    // Ads that had results but are not in the ads list (archived/deleted) — fetch their names once.
-    const known = new Set(rows.map((r) => r.ad_id));
-    const { data: stored } = await db.from("meta_ads").select("ad_id").eq("user_id", userId);
-    for (const s of stored || []) known.add(s.ad_id);
-    const missing = [...new Set(dailyRows.map((r) => r.ad_id))].filter((id) => !known.has(id));
-    for (const ids of chunk(missing, 50)) {
-      const found = await metaGet("", { ids: ids.join(","), fields: AD_FIELDS }).catch(() => ({}));
-      const extra = Object.values(found || {}).map((a: any) => adRow(userId, act, a, now));
-      if (extra.length) await db.from("meta_ads").upsert(extra, { onConflict: "user_id,ad_id" });
-    }
-
-    // 3) Totals per linked promotion, over the promotion's own dates, de-duplicated by Meta.
-    const [{ data: links }, { data: promos }, { data: results }, { data: allAds }] = await Promise.all([
-      db.from("promotion_meta_links").select("promotion_id,level,meta_id").eq("user_id", userId),
-      db.from("promotions").select("id,starts_on,ends_on,published_on,status").eq("user_id", userId),
-      db.from("meta_promotion_results").select("promotion_id,fetched_at,until").eq("user_id", userId),
-      db.from("meta_ads").select("ad_id,campaign_id").eq("user_id", userId),
-    ]);
-    const byPromotion = new Map<string, { level: string; meta_id: string }[]>();
-    for (const l of links || []) byPromotion.set(l.promotion_id, [...(byPromotion.get(l.promotion_id) || []), l]);
-    const unlinked = (results || []).filter((r) => !byPromotion.has(r.promotion_id)).map((r) => r.promotion_id);
-    if (unlinked.length) await db.from("meta_promotion_results").delete().eq("user_id", userId).in("promotion_id", unlinked);
-
-    let promotionsUpdated = 0;
-    for (const p of promos || []) {
-      const own = byPromotion.get(p.id);
-      if (!own || p.status === "cancelled") continue;
-      const start = p.published_on || p.starts_on;
-      if (start > today) continue;
-      const until = p.ends_on < today ? p.ends_on : today;
-      const previous = (results || []).find((r) => r.promotion_id === p.id);
-      const settled = addDays(p.ends_on, FINAL_AFTER_DAYS) < today;
-      if (settled && previous && previous.until === until && previous.fetched_at.slice(0, 10) > addDays(p.ends_on, FINAL_AFTER_DAYS)) continue;
-      const adIds = new Set<string>();
-      for (const l of own) {
-        if (l.level === "ad") adIds.add(l.meta_id);
-        else for (const a of allAds || []) if (a.campaign_id === l.meta_id) adIds.add(a.ad_id);
-      }
-      const campaignOnly = own.filter((l) => l.level === "campaign" && !(allAds || []).some((a) => a.campaign_id === l.meta_id));
-      const filtering = adIds.size
-        ? [{ field: "ad.id", operator: "IN", value: [...adIds] }]
-        : campaignOnly.length
-          ? [{ field: "campaign.id", operator: "IN", value: campaignOnly.map((l) => l.meta_id) }]
-          : null;
-      if (!filtering) continue;
-      const total = await insights(act + "/insights", {
-        level: "account", use_unified_attribution_setting: "true",
-        time_range: JSON.stringify({ since: start, until }), filtering: JSON.stringify(filtering),
-      });
-      const row = total.rows[0];
-      const { error } = await db.from("meta_promotion_results").upsert({
-        promotion_id: p.id, user_id: userId, since: start, until,
-        currency: row?.account_currency || info.currency || null,
-        ...metrics(row, total.unavailable), unavailable: total.unavailable,
-        ad_count: adIds.size, fetched_at: now,
-      }, { onConflict: "promotion_id" });
-      if (error) throw error;
-      promotionsUpdated++;
-    }
-
-    const done = new Date().toISOString();
-    await db.from("meta_accounts").update({ sync_status: "ok", last_success_at: done, last_error: null }).eq("user_id", userId);
-    await db.from("meta_sync_runs").update({
-      status: "ok", finished_at: done, ads_seen: rows.length, days_saved: dailyRows.length, promotions_updated: promotionsUpdated,
-    }).eq("id", run?.id);
-    return { status: "ok", ads: rows.length, days: dailyRows.length, promotions: promotionsUpdated };
+    if (okAccounts.length) promotions = await promotionTotals(db, userId, okAccounts, today, now);
   } catch (e) {
-    const reconnect = e instanceof MetaError && e.reconnect;
-    const message = e instanceof Error ? e.message.slice(0, 500) : "Άγνωστο σφάλμα";
-    const status = reconnect ? "needs_reconnect" : "error";
-    await db.from("meta_accounts").update({ sync_status: status, last_error: message }).eq("user_id", userId);
-    await db.from("meta_sync_runs").update({ status, finished_at: new Date().toISOString(), message }).eq("id", run?.id);
-    return { status, message };
+    problems.push(e instanceof Error ? e.message.slice(0, 400) : "Άγνωστο σφάλμα");
   }
+
+  const status = problems.length ? (reconnect ? "needs_reconnect" : "error") : "ok";
+  const message = problems.length ? problems.join(" | ").slice(0, 1000) : null;
+  await db.from("meta_sync_runs").update({
+    status, finished_at: new Date().toISOString(), ads_seen: ads, days_saved: days, promotions_updated: promotions, message,
+  }).eq("id", run?.id);
+  return status === "ok"
+    ? { status, accounts: accounts.length, ads, days, promotions }
+    : { status, message, accounts: accounts.length, synced: okAccounts.length };
 }
 
 function secretKeyFromList(): string | undefined {
@@ -337,7 +408,7 @@ export async function handler(req: Request): Promise<Response> {
     if (ok !== true) return json({ error: "forbidden" }, 403);
     const { data: accounts } = await db.from("meta_accounts").select("user_id");
     const out = [];
-    for (const a of accounts || []) out.push(await syncUser(db, a.user_id, "daily"));
+    for (const uid of new Set((accounts || []).map((a) => a.user_id))) out.push(await syncUser(db, uid, "daily"));
     return json({ results: out });
   }
 

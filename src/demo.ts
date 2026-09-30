@@ -147,11 +147,15 @@ export function demoMeta(): { meta: MetaData; daily: MetaDaily[] } {
   return {
     daily,
     meta: {
-      account: {
+      accounts: [{
         user_id: "demo", ad_account_id: "act_1234567890", name: "WebTag Ads", currency: "EUR",
         timezone_name: "Europe/Athens", account_status: 1, sync_status: "ok",
         last_attempt_at: now, last_success_at: now, last_error: null,
-      },
+      }, {
+        user_id: "demo", ad_account_id: "act_9876543210", name: "Πελάτες Β", currency: "EUR",
+        timezone_name: "Europe/Athens", account_status: 1, sync_status: "ok",
+        last_attempt_at: now, last_success_at: now, last_error: null,
+      }],
       ads: [
         ad("a1", "Φθινοπωρινό μενού — carousel", "c1", "Olive & Thyme | Φθινόπωρο", "OUTCOME_ENGAGEMENT", "b1", "assigned"),
         ad("a2", "Φθινοπωρινό μενού — reel", "c1", "Olive & Thyme | Φθινόπωρο", "OUTCOME_ENGAGEMENT", "b1", "assigned"),

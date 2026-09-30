@@ -1,7 +1,7 @@
 import { supabase } from "./data";
 import type { MetaAccount, MetaAd, MetaLink, MetaResult, MetaRun, MetaDaily, MetaData, MetaNumbers, MetaPage } from "./metaCore";
 
-export const emptyMeta: MetaData = { account: null, ads: [], links: [], results: [], runs: [], pages: [] };
+export const emptyMeta: MetaData = { accounts: [], ads: [], links: [], results: [], runs: [], pages: [] };
 
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 function normalizeNumbers<T extends MetaNumbers>(r: T): T {
@@ -18,7 +18,7 @@ function normalizeNumbers<T extends MetaNumbers>(r: T): T {
 export async function loadMeta(userId: string): Promise<MetaData> {
   if (!supabase) throw new Error("Not configured");
   const [account, ads, links, results, runs] = await Promise.all([
-    supabase.from("meta_accounts").select("*").eq("user_id", userId).maybeSingle(),
+    supabase.from("meta_accounts").select("*").eq("user_id", userId).order("created_at"),
     supabase.from("meta_ads").select("*").eq("user_id", userId).order("created_time", { ascending: false }).limit(5000),
     supabase.from("promotion_meta_links").select("id,promotion_id,level,meta_id").eq("user_id", userId),
     supabase.from("meta_promotion_results").select("*").eq("user_id", userId),
@@ -29,7 +29,7 @@ export async function loadMeta(userId: string): Promise<MetaData> {
   const pages = await supabase.from("meta_pages").select("page_id,name,business_id").eq("user_id", userId);
   return {
     pages: pages.error ? [] : ((pages.data || []) as MetaPage[]),
-    account: account.data as MetaAccount | null,
+    accounts: (account.data || []) as MetaAccount[],
     ads: (ads.data || []) as MetaAd[],
     links: (links.data || []) as MetaLink[],
     results: ((results.data || []) as MetaResult[]).map(normalizeNumbers),
@@ -49,12 +49,14 @@ export async function loadDaily(userId: string, adIds: string[], since: string, 
   if (error) throw error;
   return ((data || []) as MetaDaily[]).map(normalizeNumbers);
 }
-export async function saveAccount(userId: string, adAccountId: string, exists: boolean) {
+export async function addAccount(userId: string, adAccountId: string) {
   if (!supabase) throw new Error("Not configured");
-  const q = exists
-    ? supabase.from("meta_accounts").update({ ad_account_id: adAccountId }).eq("user_id", userId)
-    : supabase.from("meta_accounts").insert({ user_id: userId, ad_account_id: adAccountId });
-  const { error } = await q;
+  const { error } = await supabase.from("meta_accounts").insert({ user_id: userId, ad_account_id: adAccountId });
+  if (error) throw error;
+}
+export async function removeAccount(userId: string, adAccountId: string) {
+  if (!supabase) throw new Error("Not configured");
+  const { error } = await supabase.from("meta_accounts").delete().eq("user_id", userId).eq("ad_account_id", adAccountId);
   if (error) throw error;
 }
 export async function reviewAds(userId: string, adIds: string[], businessId: string | null) {

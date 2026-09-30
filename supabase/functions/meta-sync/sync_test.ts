@@ -162,3 +162,46 @@ Deno.test("invalid token marks reconnect", async () => {
   globalThis.fetch = saved;
   if (r.status !== "needs_reconnect" || tables.meta_accounts[0].sync_status !== "needs_reconnect") throw new Error(JSON.stringify(r));
 });
+
+Deno.test("several ad accounts: results are added, reach is not, a broken account does not stop the others", async () => {
+  const base = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL) => {
+    const url = new URL(String(input));
+    const path = url.pathname.replace(/^\/v\d+\.\d+\//, "");
+    const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    if (path.startsWith("act_3")) return new Response(JSON.stringify({ error: { code: 100, message: "Unsupported get request" } }), { status: 400 });
+    if (path === "act_2") return ok({ name: "Second", currency: "EUR", timezone_name: "Europe/Athens" });
+    if (path === "act_2/ads") return ok({ data: [{ id: "21", name: "X", campaign: { id: "c9", name: "Other client" } }] });
+    if (path === "act_2/insights" && url.searchParams.get("level") === "ad")
+      return ok({ data: [{ ad_id: "21", date_start: "2026-09-21", spend: "3", impressions: "100", clicks: "4", inline_link_clicks: "2", account_currency: "EUR" }] });
+    if (path === "act_2/insights") return ok({ data: [{ spend: "3", impressions: "100", reach: "80", clicks: "4", inline_link_clicks: "2", account_currency: "EUR", actions: [{ action_type: "lead", value: "1" }] }] });
+    return base(input);
+  }) as typeof fetch;
+  const U = "u3";
+  const tables: Record<string, Row[]> = {
+    meta_accounts: [
+      { user_id: U, ad_account_id: "act_1", sync_status: "pending" },
+      { user_id: U, ad_account_id: "act_2", sync_status: "pending" },
+      { user_id: U, ad_account_id: "act_3", sync_status: "pending" },
+    ],
+    meta_sync_runs: [],
+    meta_ads: [],
+    meta_insights_daily: [],
+    meta_pages: [],
+    promotion_meta_links: [
+      { user_id: U, promotion_id: "p1", level: "campaign", meta_id: "c1" },
+      { user_id: U, promotion_id: "p1", level: "ad", meta_id: "21" },
+    ],
+    promotions: [{ user_id: U, id: "p1", starts_on: "2026-09-15", ends_on: "2026-10-30", published_on: "2026-09-16", status: "published" }],
+    meta_promotion_results: [],
+  };
+  const r = await syncUser(fakeDb(tables), U, "manual");
+  globalThis.fetch = base;
+  const st = Object.fromEntries(tables.meta_accounts.map((a) => [a.ad_account_id, a.sync_status]));
+  if (st.act_1 !== "ok" || st.act_2 !== "ok" || st.act_3 !== "error") throw new Error(JSON.stringify(st));
+  if (r.status !== "error" || !String(r.message).includes("act_3")) throw new Error(JSON.stringify(r));
+  const res = tables.meta_promotion_results[0];
+  if (res.spend !== 10.5 || res.impressions !== 1400 || res.reach !== null || !res.unavailable.includes("reach")) throw new Error(JSON.stringify(res));
+  if (res.actions.lead !== 1 || res.ad_count !== 3) throw new Error(JSON.stringify(res));
+  if (tables.meta_ads.find((a) => a.ad_id === "21")?.account_id !== "act_2") throw new Error("account of ad");
+});

@@ -55,7 +55,8 @@ import {
   metaSync,
   removeLink,
   reviewAds,
-  saveAccount,
+  addAccount,
+  removeAccount,
   type MetaData,
 } from "./meta";
 import {
@@ -356,7 +357,7 @@ export default function App() {
     return Promise.resolve();
   };
   const newAdsCount = meta.ads.filter(
-    (a) => a.review_state === "new" && a.account_id === meta.account?.ad_account_id,
+    (a) => a.review_state === "new" && meta.accounts.some((x) => x.ad_account_id === a.account_id),
   ).length;
   const navigate = useCallback((next: View) => {
     setView(next);
@@ -1206,13 +1207,21 @@ export default function App() {
                   businesses={data.businesses}
                   demo={demoMode}
                   busy={metaBusy}
-                  onSaveAccount={(id) =>
+                  onAddAccount={(id) =>
                     demoMode
-                      ? demoOnly((m) => ({ ...m, account: m.account && { ...m.account, ad_account_id: id } }))
-                      : metaAction(
-                          () => saveAccount(userId!, id, !!meta.account),
-                          "Ο λογαριασμός αποθηκεύτηκε. Πάτα «Συγχρονισμός τώρα».",
-                        )
+                      ? demoOnly((m) => ({
+                          ...m,
+                          accounts: [
+                            ...m.accounts,
+                            { ...m.accounts[0], ad_account_id: id, name: null, sync_status: "pending", last_success_at: null, last_error: null },
+                          ],
+                        }))
+                      : metaAction(() => addAccount(userId!, id), "Ο λογαριασμός προστέθηκε. Πάτα «Συγχρονισμός τώρα».")
+                  }
+                  onRemoveAccount={(id) =>
+                    demoMode
+                      ? demoOnly((m) => ({ ...m, accounts: m.accounts.filter((a) => a.ad_account_id !== id) }))
+                      : metaAction(() => removeAccount(userId!, id), "Ο λογαριασμός αποσυνδέθηκε.")
                   }
                   onSync={() =>
                     demoMode
