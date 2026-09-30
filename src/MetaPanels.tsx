@@ -9,6 +9,7 @@ import {
   dateTimeLabel,
   loadDaily,
   money,
+  pageName,
   resultValues,
   type MetaAd,
   type MetaDaily,
@@ -319,6 +320,184 @@ export function BusinessMetaComparison({
             })}
           </tbody>
         </table>
+      </div>
+    </section>
+  );
+}
+
+/** On a client's page: which Facebook Page(s) and campaigns belong to this client in Meta. */
+export function BusinessMetaPanel({
+  business,
+  meta,
+  onMapPage,
+  onAssign,
+  onOpenMeta,
+}: {
+  business: Business;
+  meta: MetaData;
+  onMapPage: (pageId: string, businessId: string | null) => Promise<void>;
+  onAssign: (adIds: string[], businessId: string | null) => Promise<void>;
+  onOpenMeta: () => void;
+}) {
+  const [pagePick, setPagePick] = useState("");
+  const [campaignPick, setCampaignPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!meta.account)
+    return (
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <h2>Meta (Facebook & Instagram)</h2>
+            <p>Σύνδεσε πρώτα τον διαφημιστικό λογαριασμό Meta.</p>
+          </div>
+          <button className="text-action" onClick={onOpenMeta}>
+            Ρυθμίσεις Meta
+          </button>
+        </div>
+      </section>
+    );
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ads = meta.ads.filter((a) => a.account_id === meta.account!.ad_account_id);
+  const ownPages = meta.pages.filter((p) => p.business_id === business.id);
+  const freePages = meta.pages.filter((p) => !p.business_id);
+  const otherPages = meta.pages.filter((p) => p.business_id && p.business_id !== business.id);
+  const campaigns = new Map<string, { name: string; ads: MetaAd[] }>();
+  for (const a of ads) {
+    const id = a.campaign_id || `ad:${a.ad_id}`;
+    const c = campaigns.get(id) || { name: a.campaign_name || a.name, ads: [] };
+    c.ads.push(a);
+    campaigns.set(id, c);
+  }
+  const ownCampaigns = [...campaigns.entries()].filter(([, c]) => c.ads.some((a) => a.business_id === business.id));
+  const openCampaigns = [...campaigns.entries()].filter(([, c]) => c.ads.every((a) => a.business_id !== business.id));
+  const pageOfAds = (list: MetaAd[]) => {
+    const id = list.find((a) => a.page_id)?.page_id;
+    return id ? pageName(meta.pages.find((p) => p.page_id === id), id) : null;
+  };
+  return (
+    <section className="panel business-meta">
+      <div className="section-heading">
+        <div>
+          <h2>Meta (Facebook & Instagram)</h2>
+          <p>Ποια σελίδα και ποιες καμπάνιες της Meta ανήκουν σε αυτόν τον πελάτη.</p>
+        </div>
+      </div>
+      <div className="business-meta-body">
+        <div>
+          <h4>Σελίδα Facebook του πελάτη</h4>
+          <p className="meta-note">Οι νέες διαφημίσεις αυτής της σελίδας θα αντιστοιχίζονται αυτόματα σε αυτόν τον πελάτη.</p>
+          <ul className="meta-links">
+            {ownPages.map((p) => (
+              <li key={p.page_id}>
+                <span className="meta-level">Σελίδα</span>
+                {pageName(p)}
+                <button className="icon-button" aria-label="Αφαίρεση σελίδας" disabled={busy} onClick={() => run(() => onMapPage(p.page_id, null))}>
+                  <X size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          {meta.pages.length === 0 ? (
+            <p className="meta-note">Οι σελίδες εμφανίζονται μετά τον πρώτο συγχρονισμό.</p>
+          ) : (
+            <div className="meta-link-form">
+              <select aria-label="Σελίδα Facebook" value={pagePick} onChange={(e) => setPagePick(e.target.value)}>
+                <option value="">Διάλεξε σελίδα…</option>
+                {freePages.length > 0 && (
+                  <optgroup label="Χωρίς πελάτη">
+                    {freePages.map((p) => (
+                      <option key={p.page_id} value={p.page_id}>
+                        {pageName(p)}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {otherPages.length > 0 && (
+                  <optgroup label="Σε άλλον πελάτη (θα μεταφερθεί)">
+                    {otherPages.map((p) => (
+                      <option key={p.page_id} value={p.page_id}>
+                        {pageName(p)}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              <button
+                className="button primary small"
+                disabled={!pagePick || busy}
+                onClick={() =>
+                  run(async () => {
+                    await onMapPage(pagePick, business.id);
+                    setPagePick("");
+                  })
+                }
+              >
+                <Link2 size={14} /> Αντιστοίχιση
+              </button>
+            </div>
+          )}
+        </div>
+        <div>
+          <h4>Καμπάνιες του πελάτη</h4>
+          {ownCampaigns.length ? (
+            <ul className="meta-links">
+              {ownCampaigns.map(([id, c]) => (
+                <li key={id} title={pageOfAds(c.ads) || undefined}>
+                  <span className="meta-level">Καμπάνια</span>
+                  {c.name}
+                  <button
+                    className="icon-button"
+                    aria-label="Αφαίρεση καμπάνιας από τον πελάτη"
+                    disabled={busy}
+                    onClick={() => run(() => onAssign(c.ads.filter((a) => a.business_id === business.id).map((a) => a.ad_id), null))}
+                  >
+                    <X size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="meta-note">Δεν υπάρχουν ακόμη καμπάνιες για αυτόν τον πελάτη.</p>
+          )}
+          {openCampaigns.length > 0 && (
+            <div className="meta-link-form">
+              <select aria-label="Καμπάνια Meta" value={campaignPick} onChange={(e) => setCampaignPick(e.target.value)}>
+                <option value="">Πρόσθεσε καμπάνια…</option>
+                {openCampaigns.map(([id, c]) => (
+                  <option key={id} value={id}>
+                    {c.name}
+                    {c.ads[0].review_state === "new" ? " · νέα" : c.ads[0].business_id ? " · σε άλλον πελάτη" : ""}
+                    {pageOfAds(c.ads) ? ` · ${pageOfAds(c.ads)}` : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="button primary small"
+                disabled={!campaignPick || busy}
+                onClick={() =>
+                  run(async () => {
+                    await onAssign(campaigns.get(campaignPick)!.ads.map((a) => a.ad_id), business.id);
+                    setCampaignPick("");
+                  })
+                }
+              >
+                <Link2 size={14} /> Προσθήκη
+              </button>
+            </div>
+          )}
+        </div>
+        {error && <p className="form-error">{error}</p>}
       </div>
     </section>
   );

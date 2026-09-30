@@ -5,6 +5,7 @@ import {
   dateTimeLabel,
   metaStatus,
   objectiveLabel,
+  pageName,
   suggestBusiness,
   type MetaAd,
   type MetaData,
@@ -253,6 +254,15 @@ export default function MetaView({
                         {g.objective && ` · ${objectiveLabel[g.objective] || g.objective}`}
                       </span>
                       <small>{g.ads.map((a) => a.name).join(" · ")}</small>
+                      {g.ads.find((a) => a.page_id) && (
+                        <small>
+                          Σελίδα:{" "}
+                          {pageName(
+                            meta.pages.find((p) => p.page_id === g.ads.find((a) => a.page_id)!.page_id),
+                            g.ads.find((a) => a.page_id)!.page_id,
+                          )}
+                        </small>
+                      )}
                       {suggestion && <small className="meta-suggestion">Πρόταση από το όνομα: {suggestion.name}</small>}
                     </div>
                     <div className="meta-review-actions">

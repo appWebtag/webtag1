@@ -1,7 +1,7 @@
 import { supabase } from "./data";
-import type { MetaAccount, MetaAd, MetaLink, MetaResult, MetaRun, MetaDaily, MetaData, MetaNumbers } from "./metaCore";
+import type { MetaAccount, MetaAd, MetaLink, MetaResult, MetaRun, MetaDaily, MetaData, MetaNumbers, MetaPage } from "./metaCore";
 
-export const emptyMeta: MetaData = { account: null, ads: [], links: [], results: [], runs: [] };
+export const emptyMeta: MetaData = { account: null, ads: [], links: [], results: [], runs: [], pages: [] };
 
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 function normalizeNumbers<T extends MetaNumbers>(r: T): T {
@@ -25,7 +25,10 @@ export async function loadMeta(userId: string): Promise<MetaData> {
     supabase.from("meta_sync_runs").select("*").eq("user_id", userId).order("started_at", { ascending: false }).limit(10),
   ]);
   for (const r of [account, ads, links, results, runs]) if (r.error) throw r.error;
+  // Pages are optional: if that table is not there yet, the rest still works.
+  const pages = await supabase.from("meta_pages").select("page_id,name,business_id").eq("user_id", userId);
   return {
+    pages: pages.error ? [] : ((pages.data || []) as MetaPage[]),
     account: account.data as MetaAccount | null,
     ads: (ads.data || []) as MetaAd[],
     links: (links.data || []) as MetaLink[],
@@ -98,4 +101,23 @@ export async function metaSync(): Promise<{ status: string; message?: string }> 
   return data;
 }
 
+export async function mapPage(userId: string, pageId: string, businessId: string | null) {
+  if (!supabase) throw new Error("Not configured");
+  const { error } = await supabase
+    .from("meta_pages")
+    .update({ business_id: businessId })
+    .eq("user_id", userId)
+    .eq("page_id", pageId);
+  if (error) throw error;
+}
 export * from "./metaCore";
+/** Assign ads to a client (or send them back to "new" when businessId is null). */
+export async function assignAds(userId: string, adIds: string[], businessId: string | null) {
+  if (!supabase) throw new Error("Not configured");
+  const { error } = await supabase
+    .from("meta_ads")
+    .update({ business_id: businessId, review_state: businessId ? "assigned" : "new" })
+    .eq("user_id", userId)
+    .in("ad_id", adIds);
+  if (error) throw error;
+}

@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  FileDown,
   Tags,
   UserRound,
   Users,
@@ -44,10 +45,12 @@ import {
 import { CategoryManager, FiltersBar } from "./Filters";
 import { demoData, demoMeta } from "./demo";
 import MetaView from "./MetaView";
-import { BusinessMetaComparison, PromotionMetaPanel } from "./MetaPanels";
+import { BusinessMetaComparison, BusinessMetaPanel, PromotionMetaPanel } from "./MetaPanels";
 import {
   addLink,
+  assignAds,
   emptyMeta,
+  mapPage,
   loadMeta,
   metaSync,
   removeLink,
@@ -80,7 +83,10 @@ import {
   friendlyError,
   loadData,
   deleteCategory,
+  removeLogoFile,
   saveBusiness,
+  signedLogoUrls,
+  uploadLogo,
   saveCategory,
   savePromotion,
   setPromotionCategories,
@@ -215,6 +221,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [filters, setFilters] = useState<PromotionFilters>(emptyFilters);
+  const [logoUrls, setLogoUrls] = useState<Record<string, string>>({});
+  const [exporting, setExporting] = useState(false);
   const [popup, setPopup] = useState<Popup>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -279,7 +287,12 @@ export default function App() {
     setLoading(true);
     loadData(userId)
       .then((value) => {
-        if (active) setData(value);
+        if (!active) return;
+        setData(value);
+        const paths = value.businesses.map((b) => b.logo_path).filter((x): x is string => !!x);
+        signedLogoUrls(paths)
+          .then((urls) => active && setLogoUrls(urls))
+          .catch(() => {});
       })
       .catch((error) => {
         if (active) setLoadError(friendlyError(error));
@@ -370,16 +383,35 @@ export default function App() {
       setPopup({ type: "promotion-form", previous: p });
     } else setPopup({ type: "confirm", promotion: p, action: "publish" });
   };
-  const persistBusiness = async (b: Business) => {
+  const persistBusiness = async (b: Business, logo?: Blob | null) => {
     const expectedUser = userId;
     if (!expectedUser) throw new Error("Συνδέσου ξανά για να αποθηκεύσεις.");
     try {
-      const saved = demoMode
-        ? b
-        : await saveBusiness(
-            { ...b, user_id: expectedUser },
-            data.businesses.some((x) => x.id === b.id),
-          );
+      const exists = data.businesses.some((x) => x.id === b.id);
+      const oldPath = data.businesses.find((x) => x.id === b.id)?.logo_path || null;
+      let saved: Business;
+      if (demoMode) {
+        saved = b;
+        if (logo !== undefined)
+          setLogoUrls((m) => {
+            const next = { ...m };
+            if (logo) next[`demo/${b.id}`] = URL.createObjectURL(logo);
+            else delete next[`demo/${b.id}`];
+            return next;
+          });
+        saved = { ...b, logo_path: logo ? `demo/${b.id}` : logo === null ? null : b.logo_path };
+      } else {
+        saved = await saveBusiness({ ...b, user_id: expectedUser }, exists);
+        if (logo !== undefined) {
+          const path = logo ? await uploadLogo(expectedUser, saved.id, logo) : null;
+          saved = await saveBusiness({ ...saved, logo_path: path }, true);
+          if (oldPath && oldPath !== path) await removeLogoFile(oldPath);
+          if (path) {
+            const urls = await signedLogoUrls([path]);
+            setLogoUrls((m) => ({ ...m, ...urls }));
+          }
+        }
+      }
       if (userRef.current !== expectedUser) return;
       setData((d) => ({
         ...d,
@@ -598,9 +630,53 @@ export default function App() {
     view === "business"
       ? activeBusiness?.name || "Επιχείρηση"
       : navigation.find((n) => n.id === view)?.title;
+  const logoOf = (businessId: string | undefined) => {
+    const path = data.businesses.find((b) => b.id === businessId)?.logo_path;
+    return path ? logoUrls[path] : undefined;
+  };
   const labels = {
     label: (p: Promotion) => promotionLabel(p, data),
     categories: (p: Promotion) => categoryNames(p.id, data),
+    logo: logoOf,
+  };
+  const filterSummary = () => {
+    const parts: string[] = [];
+    if (filters.kind !== "all") parts.push(filters.kind === "post" ? "Post" : "Ads");
+    if (filters.business) parts.push(data.businesses.find((b) => b.id === filters.business)?.name || "");
+    if (filters.channel) parts.push(filters.channel);
+    if (filters.categories.length)
+      parts.push(
+        "Κατηγορίες: " +
+          data.categories.filter((c) => filters.categories.includes(c.id)).map((c) => c.name).join(", "),
+      );
+    if (filters.from || filters.to)
+      parts.push(
+        `Διάστημα: ${filters.from ? dateLabel(filters.from, true) : "…"} – ${filters.to ? dateLabel(filters.to, true) : "…"}`,
+      );
+    if (filter !== "all")
+      parts.push(
+        ({ active: "Ενεργές", scheduled: "Προγραμματισμένες", expired: "Έληξαν", completed: "Ολοκληρωμένες", cancelled: "Ακυρωμένες" } as Record<string, string>)[filter] || "",
+      );
+    if (search.trim()) parts.push(`Αναζήτηση: «${search.trim()}»`);
+    return parts.length ? "Φίλτρα: " + parts.filter(Boolean).join(" · ") : "Όλες οι προωθήσεις";
+  };
+  const exportPdf = async () => {
+    setExporting(true);
+    try {
+      const { exportPromotionsPdf } = await import("./pdfExport");
+      await exportPromotionsPdf({
+        promotions,
+        data,
+        meta,
+        logoUrl: (id) => logoOf(id),
+        filterSummary: filterSummary(),
+        today,
+      });
+    } catch {
+      setToast("Η εξαγωγή PDF δεν ολοκληρώθηκε. Δοκίμασε ξανά.");
+    } finally {
+      setExporting(false);
+    }
   };
   return (
     <LabelContext.Provider value={labels}>
@@ -841,6 +917,15 @@ export default function App() {
                     <div className="inline-actions">
                       <button
                         className="button secondary"
+                        onClick={exportPdf}
+                        disabled={exporting || !promotions.length}
+                        title="Εξαγωγή όσων εμφανίζονται, με τα στατιστικά Meta"
+                      >
+                        <FileDown size={16} />
+                        {exporting ? "Δημιουργία…" : "Εξαγωγή PDF"}
+                      </button>
+                      <button
+                        className="button secondary"
                         onClick={() => setPopup({ type: "categories" })}
                       >
                         <Tags size={16} />
@@ -984,6 +1069,36 @@ export default function App() {
                         onBusiness={openBusiness}
                       />
                     </section>
+                    <BusinessMetaPanel
+                      business={activeBusiness}
+                      meta={meta}
+                      onOpenMeta={() => navigate("meta")}
+                      onMapPage={(pageId, businessId) =>
+                        demoMode
+                          ? demoOnly((m) => ({
+                              ...m,
+                              pages: m.pages.map((p) => (p.page_id === pageId ? { ...p, business_id: businessId } : p)),
+                              ads: m.ads.map((a) =>
+                                businessId && a.page_id === pageId && a.review_state === "new"
+                                  ? { ...a, business_id: businessId, review_state: "assigned" }
+                                  : a,
+                              ),
+                            }))
+                          : metaAction(() => mapPage(userId!, pageId, businessId), "Η σελίδα αντιστοιχίστηκε.")
+                      }
+                      onAssign={(ids, businessId) =>
+                        demoMode
+                          ? demoOnly((m) => ({
+                              ...m,
+                              ads: m.ads.map((a) =>
+                                ids.includes(a.ad_id)
+                                  ? { ...a, business_id: businessId, review_state: businessId ? "assigned" : "new" }
+                                  : a,
+                              ),
+                            }))
+                          : metaAction(() => assignAds(userId!, ids, businessId))
+                      }
+                    />
                     <BusinessMetaComparison
                       business={activeBusiness}
                       promotions={businessPromotions}
@@ -1069,6 +1184,7 @@ export default function App() {
           key={popup.initial?.id || "new-business"}
           initial={popup.initial}
           userId={userId!}
+          logoUrl={logoOf(popup.initial?.id)}
           onSave={persistBusiness}
           onClose={() => setPopup(null)}
         />

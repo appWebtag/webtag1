@@ -162,3 +162,29 @@ export async function setPromotionCategories(promotionId: string, categoryIds: s
   });
   if (error) throw error;
 }
+
+// ---------- client logos (private Storage bucket, shown through signed links) ----------
+const LOGO_BUCKET = "business-logos";
+export async function uploadLogo(userId: string, businessId: string, png: Blob): Promise<string> {
+  if (!supabase) throw new Error("Not configured");
+  const path = `${userId}/${businessId}-${Date.now()}.png`;
+  const { error } = await supabase.storage.from(LOGO_BUCKET).upload(path, png, {
+    contentType: "image/png",
+    upsert: false,
+    cacheControl: "3600",
+  });
+  if (error) throw error;
+  return path;
+}
+export async function removeLogoFile(path: string) {
+  if (!supabase) return;
+  await supabase.storage.from(LOGO_BUCKET).remove([path]);
+}
+export async function signedLogoUrls(paths: string[]): Promise<Record<string, string>> {
+  if (!supabase || !paths.length) return {};
+  const { data, error } = await supabase.storage.from(LOGO_BUCKET).createSignedUrls(paths, 60 * 60 * 12);
+  if (error) throw error;
+  const out: Record<string, string> = {};
+  for (const item of data || []) if (item.path && item.signedUrl) out[item.path] = item.signedUrl;
+  return out;
+}

@@ -145,10 +145,27 @@ function adRow(userId: string, accountId: string, ad: any, now: string) {
     adset_name: ad.adset?.name ?? null,
     effective_status: ad.effective_status ?? null,
     created_time: ad.created_time ?? null,
+    page_id: pageOf(ad),
     last_seen_at: now,
   };
 }
-const AD_FIELDS = "id,name,effective_status,created_time,campaign{id,name,objective},adset{id,name}";
+// The Facebook Page an ad promotes: from the creative, when Meta provides it.
+function pageOf(ad: any): string | null {
+  const c = ad.creative || {};
+  const id = c.object_story_spec?.page_id || String(c.effective_object_story_id || "").split("_")[0] || c.actor_id;
+  return id && /^[0-9]{1,30}$/.test(String(id)) ? String(id) : null;
+}
+const BASE_AD_FIELDS = "id,name,effective_status,created_time,campaign{id,name,objective},adset{id,name}";
+const AD_FIELDS = BASE_AD_FIELDS + ",creative{effective_object_story_id,actor_id,object_story_spec{page_id}}";
+// Ads list; if Meta refuses the creative fields, fall back to the basic list (no Page info).
+async function listAds(act: string): Promise<any[]> {
+  try {
+    return await metaAll(act + "/ads", { fields: AD_FIELDS });
+  } catch (e) {
+    if (e instanceof MetaError && e.code === 100) return await metaAll(act + "/ads", { fields: BASE_AD_FIELDS });
+    throw e;
+  }
+}
 
 export async function syncUser(db: SupabaseClient, userId: string, trigger: "manual" | "daily") {
   const { data: account, error: accErr } = await db.from("meta_accounts").select("*").eq("user_id", userId).maybeSingle();
@@ -174,12 +191,31 @@ export async function syncUser(db: SupabaseClient, userId: string, trigger: "man
 
     // 1) Ads (new ones appear as "new" for the user to assign — nothing is assigned automatically).
     const now = new Date().toISOString();
-    const ads = await metaAll(act + "/ads", { fields: AD_FIELDS });
+    const ads = await listAds(act);
     const rows = ads.map((a) => adRow(userId, act, a, now));
     for (const part of chunk(rows, 500)) {
       const { error } = await db.from("meta_ads").upsert(part, { onConflict: "user_id,ad_id" });
       if (error) throw error;
     }
+    // Pages seen in the ads: remember them (new ones only), with their names when Meta gives them.
+    const pageIds = [...new Set(rows.map((r) => r.page_id).filter((x): x is string => !!x))];
+    if (pageIds.length) {
+      const { error } = await db.from("meta_pages").upsert(
+        pageIds.map((page_id) => ({ user_id: userId, page_id })),
+        { onConflict: "user_id,page_id", ignoreDuplicates: true },
+      );
+      if (error) throw error;
+      for (const ids of chunk(pageIds, 50)) {
+        const names = await metaGet("", { ids: ids.join(","), fields: "name" }).catch(() => ({}));
+        for (const [id, page] of Object.entries(names || {}))
+          if ((page as any)?.name) await db.from("meta_pages").update({ name: (page as any).name }).eq("user_id", userId).eq("page_id", id);
+      }
+    }
+    // Ads of a Page the user linked to a client go to that client (only ads still waiting for review).
+    const { data: mapped } = await db.from("meta_pages").select("page_id,business_id").eq("user_id", userId).not("business_id", "is", null);
+    for (const m of mapped || [])
+      await db.from("meta_ads").update({ business_id: m.business_id, review_state: "assigned" })
+        .eq("user_id", userId).eq("page_id", m.page_id).eq("review_state", "new");
 
     // 2) Daily results per ad (re-read window so late conversions are captured; upsert = no duplicates).
     const today = dayIn(tz);

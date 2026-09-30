@@ -9,6 +9,7 @@ type Row = Record<string, any>;
 const keys: Record<string, string[]> = {
   meta_ads: ["user_id", "ad_id"],
   meta_insights_daily: ["user_id", "ad_id", "date"],
+  meta_pages: ["user_id", "page_id"],
   meta_promotion_results: ["promotion_id"],
 };
 function fakeDb(tables: Record<string, Row[]>) {
@@ -18,7 +19,7 @@ function fakeDb(tables: Record<string, Row[]>) {
     const filters: ((r: Row) => boolean)[] = [];
     let op: "select" | "update" | "insert" | "upsert" | "delete" = "select";
     let payload: any;
-    let head = false, countMode = false, single = false, maybe = false;
+    let head = false, countMode = false, single = false, maybe = false, ignoreDup = false;
     const q: any = {
       select(_c?: string, opts?: { count?: string; head?: boolean }) {
         if (opts?.head) head = true;
@@ -26,6 +27,7 @@ function fakeDb(tables: Record<string, Row[]>) {
         return q;
       },
       eq: (c: string, v: any) => (filters.push((r) => r[c] === v), q),
+      not: (c: string, _op: string, _v: any) => (filters.push((r) => r[c] !== null && r[c] !== undefined), q),
       gt: (c: string, v: any) => (filters.push((r) => r[c] > v), q),
       in: (c: string, v: any[]) => (filters.push((r) => v.includes(r[c])), q),
       order: () => q,
@@ -34,7 +36,7 @@ function fakeDb(tables: Record<string, Row[]>) {
       maybeSingle: () => ((maybe = true), q),
       insert: (v: any) => ((op = "insert"), (payload = v), q),
       update: (v: any) => ((op = "update"), (payload = v), q),
-      upsert: (v: any) => ((op = "upsert"), (payload = v), q),
+      upsert: (v: any, o?: { ignoreDuplicates?: boolean }) => ((op = "upsert"), (payload = v), (ignoreDup = !!o?.ignoreDuplicates), q),
       delete: () => ((op = "delete"), q),
       then(resolve: (x: any) => void) {
         const t = tables[table];
@@ -47,7 +49,7 @@ function fakeDb(tables: Record<string, Row[]>) {
           for (const r of Array.isArray(payload) ? payload : [payload]) {
             const k = keys[table];
             const i = t.findIndex((x) => k.every((c) => x[c] === r[c]));
-            if (i >= 0) t[i] = { ...t[i], ...r };
+            if (i >= 0) { if (!ignoreDup) t[i] = { ...t[i], ...r }; }
             else t.push({ review_state: "new", business_id: null, ...r });
           }
         } else if (op === "update") {
@@ -75,10 +77,13 @@ globalThis.fetch = (async (input: string | URL) => {
   if (path === "act_1/ads") {
     if (!url.searchParams.get("after"))
       return ok({
-        data: [{ id: "11", name: "A", campaign: { id: "c1", name: "Olive | Autumn", objective: "OUTCOME_ENGAGEMENT" }, adset: { id: "s1", name: "S" } }],
+        data: [{ id: "11", name: "A", campaign: { id: "c1", name: "Olive | Autumn", objective: "OUTCOME_ENGAGEMENT" }, adset: { id: "s1", name: "S" }, creative: { effective_object_story_id: "555_999" } }],
         paging: { next: `https://graph.facebook.com/v25.0/act_1/ads?after=x` },
       });
-    return ok({ data: [{ id: "12", name: "B", campaign: { id: "c1", name: "Olive | Autumn" }, adset: { id: "s1", name: "S" } }] });
+    return ok({ data: [
+      { id: "12", name: "B", campaign: { id: "c1", name: "Olive | Autumn" }, adset: { id: "s1", name: "S" }, creative: { object_story_spec: { page_id: "555" } } },
+      { id: "13", name: "C", campaign: { id: "c7", name: "Other page" }, creative: { effective_object_story_id: "777_1" } },
+    ] });
   }
   if (path === "act_1/insights" && url.searchParams.get("level") === "ad") {
     const fields = url.searchParams.get("fields")!;
@@ -97,6 +102,7 @@ globalThis.fetch = (async (input: string | URL) => {
     if (filtering[0].value.sort().join() !== "11,12") throw new Error("wrong ads " + filtering[0].value);
     return ok({ data: [{ spend: "7.50", impressions: "1300", clicks: "45", inline_link_clicks: "22", account_currency: "EUR" }] });
   }
+  if (path === "" && url.searchParams.get("fields") === "name") return ok({ "555": { id: "555", name: "Olive Page" } });
   if (path === "" && url.searchParams.get("ids") === "99") return ok({ "99": { id: "99", name: "Old ad", campaign: { id: "c0", name: "Old" } } });
   throw new Error("unexpected " + url);
 }) as typeof fetch;
@@ -114,6 +120,7 @@ Deno.test("sync writes ads, daily rows, promotion totals without duplicates", as
       { user_id: U, id: "p2", starts_on: "2026-09-15", ends_on: "2026-10-30", published_on: null, status: "scheduled" },
     ],
     meta_promotion_results: [{ user_id: U, promotion_id: "p-old", fetched_at: "2026-01-01", until: "2026-01-01" }],
+    meta_pages: [{ user_id: U, page_id: "777", name: null, business_id: "b7" }],
   };
   const db = fakeDb(tables);
   const r1 = await syncUser(db, U, "manual");
@@ -122,6 +129,12 @@ Deno.test("sync writes ads, daily rows, promotion totals without duplicates", as
   const ads = tables.meta_ads;
   if (ads.find((a) => a.ad_id === "11")!.review_state !== "assigned") throw new Error("assignment overwritten");
   if (ads.find((a) => a.ad_id === "12")!.review_state !== "new") throw new Error("new ad not new");
+  if (ads.find((a) => a.ad_id === "12")!.page_id !== "555" || ads.find((a) => a.ad_id === "11")!.page_id !== "555") throw new Error("page not read");
+  // ad of a Page mapped to a client is assigned to it; the mapping itself is kept
+  const a13 = ads.find((a) => a.ad_id === "13")!;
+  if (a13.review_state !== "assigned" || a13.business_id !== "b7") throw new Error("mapped page not applied " + JSON.stringify(a13));
+  const pages = tables.meta_pages;
+  if (pages.find((p) => p.page_id === "555")?.name !== "Olive Page" || pages.find((p) => p.page_id === "777")?.business_id !== "b7") throw new Error(JSON.stringify(pages));
   if (!ads.find((a) => a.ad_id === "99" && a.name === "Old ad")) throw new Error("archived ad not fetched");
   // daily rows: reach dropped -> null (unknown), actions absent -> {}
   const d11 = tables.meta_insights_daily.find((x) => x.ad_id === "11")!;

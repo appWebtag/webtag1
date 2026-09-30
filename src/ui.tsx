@@ -25,7 +25,8 @@ import {
 export const LabelContext = createContext<{
   label: (p: Promotion) => string;
   categories: (p: Promotion) => string[];
-}>({ label: (p) => p.title, categories: () => [] });
+  logo: (businessId: string | undefined) => string | undefined;
+}>({ label: (p) => p.title, categories: () => [], logo: () => undefined });
 export const useLabel = () => useContext(LabelContext);
 export function KindPill({ kind }: { kind: PromotionKind }) {
   return <span className={`kind-pill ${kind}`}>{kindLabels[kind]}</span>;
@@ -72,6 +73,14 @@ export function Avatar({
   business?: Business;
   size?: string;
 }) {
+  const { logo } = useContext(LabelContext);
+  const src = logo(business?.id);
+  if (src)
+    return (
+      <span className={`avatar logo ${size}`} aria-hidden="true">
+        <img src={src} alt="" loading="lazy" />
+      </span>
+    );
   const index =
     [...(business?.name || "A")].reduce((sum, c) => sum + c.charCodeAt(0), 0) %
     5;

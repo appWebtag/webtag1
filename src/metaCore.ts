@@ -26,6 +26,15 @@ export interface MetaAd {
   first_seen_at: string;
   business_id: string | null;
   review_state: "new" | "assigned" | "ignored";
+  page_id?: string | null;
+}
+export interface MetaPage {
+  page_id: string;
+  name: string | null;
+  business_id: string | null;
+}
+export function pageName(p: MetaPage | undefined, id?: string | null): string {
+  return p?.name || (id || p?.page_id ? `Σελίδα ${id || p?.page_id}` : "Άγνωστη σελίδα");
 }
 export interface MetaLink {
   id: string;
@@ -66,6 +75,7 @@ export interface MetaRun {
   message: string | null;
 }
 export interface MetaData {
+  pages: MetaPage[];
   account: MetaAccount | null;
   ads: MetaAd[];
   links: MetaLink[];

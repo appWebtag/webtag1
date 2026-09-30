@@ -136,6 +136,7 @@ export function demoMeta(): { meta: MetaData; daily: MetaDaily[] } {
   const now = new Date().toISOString();
   const ad = (ad_id: string, name: string, campaign_id: string, campaign_name: string, objective: string, business_id: string | null, review_state: "new" | "assigned" | "ignored") => ({
     ad_id, name, campaign_id, campaign_name, objective, business_id, review_state,
+    page_id: business_id === "b1" ? "555" : campaign_id === "c3" ? "556" : "557",
     account_id: "act_1234567890", adset_id: `s${campaign_id}`, adset_name: "Αθήνα 25-55",
     effective_status: "ACTIVE", created_time: now, first_seen_at: now,
   });
@@ -157,6 +158,11 @@ export function demoMeta(): { meta: MetaData; daily: MetaDaily[] } {
         ad("a3", "Καλοκαιρινές γεύσεις", "c2", "Olive & Thyme | Καλοκαίρι", "OUTCOME_TRAFFIC", "b1", "assigned"),
         ad("a4", "Νέο studio — video", "c3", "Forma Studio - Οκτώβριος", "OUTCOME_LEADS", null, "new"),
         ad("a5", "Brunch Σαββατοκύριακου", "c4", "Brunch promo", "OUTCOME_AWARENESS", null, "new"),
+      ],
+      pages: [
+        { page_id: "555", name: "Olive & Thyme", business_id: "b1" },
+        { page_id: "556", name: "Forma Studio Athens", business_id: null },
+        { page_id: "557", name: "The Daily Grind", business_id: null },
       ],
       links: [
         { id: "l1", promotion_id: "p1", level: "campaign", meta_id: "c1" },

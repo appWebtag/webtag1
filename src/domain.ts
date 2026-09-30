@@ -24,6 +24,7 @@ export interface Business {
   email: string;
   notes: string;
   created_at: string;
+  logo_path?: string | null;
 }
 export type PromotionKind = "post" | "ads";
 export const kindLabels: Record<PromotionKind, string> = { post: "Post", ads: "Ads" };

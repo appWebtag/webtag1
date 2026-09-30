@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { Check, Plus, X } from "lucide-react";
+import { logoToPng } from "./images";
 import {
   addDays,
   channels,
@@ -76,14 +77,42 @@ export function Modal({
 export function BusinessForm({
   initial,
   userId,
+  logoUrl,
   onSave,
   onClose,
 }: {
   initial?: Business;
   userId: string;
-  onSave: (b: Business) => Promise<void>;
+  logoUrl?: string;
+  /** logo: undefined = unchanged, null = remove, Blob = new PNG */
+  onSave: (b: Business, logo?: Blob | null) => Promise<void>;
   onClose: () => void;
 }) {
+  const [logo, setLogo] = useState<Blob | null | undefined>(undefined);
+  const [preview, setPreview] = useState<string | undefined>(logoUrl);
+  const [logoError, setLogoError] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  useEffect(
+    () => () => {
+      if (preview?.startsWith("blob:")) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
+  const pickLogo = async (file: File | undefined) => {
+    setLogoError("");
+    if (!file) return;
+    if (!/^image\/(png|jpeg|webp|gif|svg\+xml)$/.test(file.type) || file.size > 8 * 1024 * 1024) {
+      setLogoError("Διάλεξε εικόνα PNG, JPG, WEBP ή SVG έως 8 MB.");
+      return;
+    }
+    try {
+      const png = await logoToPng(file);
+      setLogo(png);
+      setPreview(URL.createObjectURL(png));
+    } catch (e) {
+      setLogoError((e as Error).message);
+    }
+  };
   const [values, setValues] = useState(
     () =>
       initial || {
@@ -111,11 +140,14 @@ export function BusinessForm({
     setBusy(true);
     setError("");
     try {
-      await onSave({
-        ...values,
-        name: values.name.trim(),
-        email: values.email.trim(),
-      });
+      await onSave(
+        {
+          ...values,
+          name: values.name.trim(),
+          email: values.email.trim(),
+        },
+        logo,
+      );
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -142,6 +174,43 @@ export function BusinessForm({
               autoComplete="organization"
             />
           </label>
+          <div className="field full">
+            <span>Logo</span>
+            <div className="logo-field">
+              <div className="logo-preview">
+                {preview ? <img src={preview} alt="Logo πελάτη" /> : <span>Χωρίς logo</span>}
+              </div>
+              <div className="logo-actions">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+                  hidden
+                  onChange={(e) => {
+                    pickLogo(e.target.files?.[0]);
+                    e.target.value = "";
+                  }}
+                />
+                <button type="button" className="button secondary small" onClick={() => fileRef.current?.click()}>
+                  {preview ? "Αλλαγή logo" : "Επιλογή logo"}
+                </button>
+                {preview && (
+                  <button
+                    type="button"
+                    className="button secondary small"
+                    onClick={() => {
+                      setLogo(null);
+                      setPreview(undefined);
+                    }}
+                  >
+                    Αφαίρεση
+                  </button>
+                )}
+                <small>Τετράγωνη εικόνα, ιδανικά με διάφανο φόντο. Αποθηκεύεται ιδιωτικά.</small>
+              </div>
+            </div>
+            {logoError && <small className="form-error">{logoError}</small>}
+          </div>
           <label className="field full">
             Υπεύθυνος επικοινωνίας
             <input
