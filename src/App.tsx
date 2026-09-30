@@ -350,7 +350,12 @@ export default function App() {
     } catch (e) {
       throw new Error(e instanceof Error && !(e as { code?: string }).code ? e.message : friendlyError(e));
     } finally {
-      setMetaBusy(false);
+      // Campaigns become promotions: refresh the Promotions page and calendar too.
+      const uid = userId;
+      loadData(uid)
+        .then((value) => userRef.current === uid && setData(value))
+        .catch(() => {})
+        .finally(() => setMetaBusy(false));
     }
   };
   const demoOnly = (update: (m: MetaData) => MetaData) => {

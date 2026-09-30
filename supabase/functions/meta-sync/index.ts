@@ -154,6 +154,9 @@ function adRow(userId: string, accountId: string, ad: any, now: string) {
     campaign_id: ad.campaign?.id ?? ad.campaign_id ?? null,
     campaign_name: ad.campaign?.name ?? null,
     objective: ad.campaign?.objective ?? null,
+    campaign_start_time: ad.campaign?.start_time ?? null,
+    campaign_stop_time: ad.campaign?.stop_time ?? null,
+    campaign_status: ad.campaign?.effective_status ?? null,
     adset_id: ad.adset?.id ?? ad.adset_id ?? null,
     adset_name: ad.adset?.name ?? null,
     effective_status: ad.effective_status ?? null,
@@ -168,7 +171,7 @@ function pageOf(ad: any): string | null {
   const id = c.object_story_spec?.page_id || String(c.effective_object_story_id || "").split("_")[0] || c.actor_id;
   return id && /^[0-9]{1,30}$/.test(String(id)) ? String(id) : null;
 }
-const BASE_AD_FIELDS = "id,name,effective_status,created_time,campaign{id,name,objective},adset{id,name}";
+const BASE_AD_FIELDS = "id,name,effective_status,created_time,campaign{id,name,objective,start_time,stop_time,effective_status},adset{id,name}";
 const AD_FIELDS = BASE_AD_FIELDS + ",creative{effective_object_story_id,actor_id,object_story_spec{page_id}}";
 // Ads list; if Meta refuses the creative fields, fall back to the basic list (no Page info).
 async function listAds(act: string): Promise<any[]> {
@@ -445,6 +448,10 @@ export async function syncUser(db: SupabaseClient, userId: string, trigger: "man
     for (const m of mapped || [])
       await db.from("meta_ads").update({ business_id: m.business_id, review_state: "assigned" })
         .eq("user_id", userId).eq("page_id", m.page_id).eq("review_state", "new");
+    // Every assigned campaign becomes (or updates) a promotion — Promotions page and calendar.
+    const made = await db.rpc("meta_sync_promotions", { p_user: userId });
+    if (made.error) notes.push("Αυτόματες προωθήσεις: " + made.error.message);
+    else if (made.data) notes.push("Νέες προωθήσεις από καμπάνιες: " + made.data);
     if (okAccounts.length) promotions = await promotionTotals(db, userId, okAccounts, today, now);
   } catch (e) {
     problems.push(e instanceof Error ? e.message.slice(0, 400) : "Άγνωστο σφάλμα");

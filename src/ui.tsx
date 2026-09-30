@@ -194,6 +194,11 @@ export function PromotionTable({
                 <td>
                   <div className="channel-cell">
                     <KindPill kind={p.kind} />
+                    {p.meta_campaign_id && (
+                      <span className="kind-pill meta" title="Δημιουργήθηκε αυτόματα από καμπάνια της Meta">
+                        Meta
+                      </span>
+                    )}
                     <ChannelPill channel={p.channel} />
                   </div>
                 </td>

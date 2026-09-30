@@ -63,7 +63,11 @@ function fakeDb(tables: Record<string, Row[]>) {
     };
     return q;
   };
-  return { from } as any;
+  const rpc = async (name: string, args: unknown) => {
+    (tables.__rpc ||= []).push({ name, args } as Row);
+    return { data: 0, error: null };
+  };
+  return { from, rpc } as any;
 }
 
 const calls: URL[] = [];
@@ -77,7 +81,7 @@ globalThis.fetch = (async (input: string | URL) => {
   if (path === "act_1/ads") {
     if (!url.searchParams.get("after"))
       return ok({
-        data: [{ id: "11", name: "A", campaign: { id: "c1", name: "Olive | Autumn", objective: "OUTCOME_ENGAGEMENT" }, adset: { id: "s1", name: "S" }, creative: { effective_object_story_id: "555_999" } }],
+        data: [{ id: "11", name: "A", campaign: { id: "c1", name: "Olive | Autumn", objective: "OUTCOME_ENGAGEMENT", start_time: "2026-09-15T10:00:00+0300", effective_status: "ACTIVE" }, adset: { id: "s1", name: "S" }, creative: { effective_object_story_id: "555_999" } }],
         paging: { next: `https://graph.facebook.com/v25.0/act_1/ads?after=x` },
       });
     return ok({ data: [
@@ -137,6 +141,8 @@ Deno.test("sync writes ads, daily rows, promotion totals without duplicates", as
   const pages = tables.meta_pages;
   if (pages.find((p) => p.page_id === "555")?.name !== "Olive Page" || pages.find((p) => p.page_id === "777")?.business_id !== "b7") throw new Error(JSON.stringify(pages));
   if (!ads.find((a) => a.ad_id === "99" && a.name === "Old ad")) throw new Error("archived ad not fetched");
+  // campaigns become promotions (database function), called for this user after the ads are assigned
+  if (!(tables.__rpc || []).some((c: any) => c.name === "meta_sync_promotions" && c.args.p_user === U)) throw new Error("promotions not refreshed");
   // Page names: from the Pages the account can promote, then by id; the user's own name is kept
   const p777 = pages.find((p) => p.page_id === "777")!;
   if (p777.name !== "Kafe 777" || p777.custom_name !== "Δικό μου όνομα") throw new Error("page names " + JSON.stringify(p777));
@@ -156,6 +162,7 @@ Deno.test("sync writes ads, daily rows, promotion totals without duplicates", as
   if (tables.meta_sync_runs.filter((r) => r.status === "ok").length !== 2) throw new Error("runs");
   // token never leaves in logs/rows
   if (JSON.stringify(tables).includes("test-token")) throw new Error("token stored");
+  if (ads.find((a) => a.ad_id === "11")!.campaign_start_time !== "2026-09-15T10:00:00+0300") throw new Error("campaign dates not stored");
 });
 
 Deno.test("invalid token marks reconnect", async () => {

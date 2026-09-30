@@ -65,6 +65,8 @@ export interface Promotion {
   created_at: string;
   kind: PromotionKind;
   cost: number | null;
+  /** Set when the promotion was created automatically from a Meta campaign. */
+  meta_campaign_id?: string | null;
 }
 export interface Data {
   businesses: Business[];

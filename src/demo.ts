@@ -74,15 +74,12 @@ export function demoData(): Data {
     promotions: [
       post("p9", "b4", "Εκδήλωση", "Instagram", -2, null),
       post("p10", "b3", "Προσφορά", "Facebook", -4, 15),
-      make(
-        "p1",
-        "b1",
-        "Το νέο φθινοπωρινό μενού",
-        "Facebook + Instagram",
-        -12,
-        2,
-        0,
-      ),
+      {
+        ...make("p1", "b1", "Olive & Thyme | Φθινόπωρο", "Facebook + Instagram", -12, 2, 0),
+        cost: 78.4,
+        meta_campaign_id: "c1",
+        notes: "Δημιουργήθηκε αυτόματα από την καμπάνια της Meta.",
+      },
       { ...make("p2", "b2", "Γνώρισε το νέο σου studio", "Instagram", -8, 5, 3), cost: 60 },
       { ...make("p3", "b3", "Κάθε πρωί, μια καλή αρχή", "Facebook", -7, 1, -1), cost: 40 },
       make("p4", "b4", "Autumn essentials", "Instagram", -5, 9, 7),

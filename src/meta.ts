@@ -63,6 +63,13 @@ export async function removeAccount(userId: string, adAccountId: string) {
   const { error } = await supabase.from("meta_accounts").delete().eq("user_id", userId).eq("ad_account_id", adAccountId);
   if (error) throw error;
 }
+/** Create / refresh the promotions of the assigned campaigns (database function). */
+export async function syncPromotions() {
+  if (!supabase) return;
+  const { error } = await supabase.rpc("meta_sync_promotions");
+  // Older database without the function: assignment still works, promotions come with the next update.
+  if (error && error.code !== "PGRST202" && error.code !== "42883") throw error;
+}
 export async function reviewAds(userId: string, adIds: string[], businessId: string | null) {
   if (!supabase) throw new Error("Not configured");
   const { error } = await supabase
@@ -71,6 +78,7 @@ export async function reviewAds(userId: string, adIds: string[], businessId: str
     .eq("user_id", userId)
     .in("ad_id", adIds);
   if (error) throw error;
+  if (businessId) await syncPromotions();
 }
 export async function addLink(userId: string, promotionId: string, level: "campaign" | "ad", metaId: string): Promise<MetaLink> {
   if (!supabase) throw new Error("Not configured");
@@ -137,4 +145,5 @@ export async function assignAds(userId: string, adIds: string[], businessId: str
     .eq("user_id", userId)
     .in("ad_id", adIds);
   if (error) throw error;
+  if (businessId) await syncPromotions();
 }
