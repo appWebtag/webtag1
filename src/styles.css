@@ -2630,3 +2630,38 @@ button.chip:hover {
 .meta-account-picker .field {
   margin-bottom: 10px;
 }
+
+/* Page names */
+.meta-review-main strong .icon-button {
+  width: 22px;
+  height: 22px;
+  vertical-align: middle;
+}
+.meta-rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.meta-rename input {
+  flex: 1 1 180px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #dddcd9;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+}
+.meta-links li:has(.meta-rename) {
+  border-radius: 10px;
+  padding: 6px;
+  flex-basis: 100%;
+}
+.meta-page-count {
+  color: #a5a29c;
+  font-size: 10px;
+}
+.meta-pages-panel {
+  margin-bottom: 23px;
+}

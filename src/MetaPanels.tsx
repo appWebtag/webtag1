@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Link2, X } from "lucide-react";
+import { BarChart3, Link2, Pencil, X } from "lucide-react";
 import { dateLabel, type Business, type Promotion } from "./domain";
 import { useLabel } from "./ui";
 import {
@@ -9,6 +9,8 @@ import {
   dateTimeLabel,
   loadDaily,
   money,
+  pageHint,
+  pageLabel,
   pageName,
   resultValues,
   type MetaAd,
@@ -331,17 +333,20 @@ export function BusinessMetaPanel({
   business,
   meta,
   onMapPage,
+  onRenamePage,
   onAssign,
   onOpenMeta,
 }: {
   business: Business;
   meta: MetaData;
   onMapPage: (pageId: string, businessId: string | null) => Promise<void>;
+  onRenamePage: (pageId: string, name: string) => Promise<void>;
   onAssign: (adIds: string[], businessId: string | null) => Promise<void>;
   onOpenMeta: () => void;
 }) {
   const [pagePick, setPagePick] = useState("");
   const [campaignPick, setCampaignPick] = useState("");
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (!meta.accounts.length)
@@ -398,17 +403,59 @@ export function BusinessMetaPanel({
       <div className="business-meta-body">
         <div>
           <h4>Σελίδα Facebook του πελάτη</h4>
-          <p className="meta-note">Οι νέες διαφημίσεις αυτής της σελίδας θα αντιστοιχίζονται αυτόματα σε αυτόν τον πελάτη.</p>
+          <p className="meta-note">
+            Μόλις αντιστοιχίσεις τη σελίδα, όλες οι καμπάνιες της (και οι νέες, σε κάθε συγχρονισμό) πηγαίνουν αυτόματα σε αυτόν τον πελάτη.
+          </p>
           <ul className="meta-links">
-            {ownPages.map((p) => (
-              <li key={p.page_id}>
-                <span className="meta-level">Σελίδα</span>
-                {pageName(p)}
-                <button className="icon-button" aria-label="Αφαίρεση σελίδας" disabled={busy} onClick={() => run(() => onMapPage(p.page_id, null))}>
-                  <X size={14} />
-                </button>
-              </li>
-            ))}
+            {ownPages.map((p) =>
+              renaming?.id === p.page_id ? (
+                <li key={p.page_id}>
+                  <form
+                    className="meta-rename"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      run(async () => {
+                        await onRenamePage(p.page_id, renaming.name);
+                        setRenaming(null);
+                      });
+                    }}
+                  >
+                    <input
+                      autoFocus
+                      aria-label="Όνομα σελίδας"
+                      maxLength={120}
+                      placeholder={p.name || "Όνομα σελίδας"}
+                      value={renaming.name}
+                      onChange={(e) => setRenaming({ id: p.page_id, name: e.target.value })}
+                    />
+                    <button className="button primary small" disabled={busy}>
+                      Αποθήκευση
+                    </button>
+                    <button type="button" className="button secondary small" onClick={() => setRenaming(null)}>
+                      Άκυρο
+                    </button>
+                  </form>
+                </li>
+              ) : (
+                <li key={p.page_id}>
+                  <span className="meta-level">Σελίδα</span>
+                  {pageName(p)}
+                  <small className="meta-page-count">{pageHint(p.page_id, ads).count} διαφ.</small>
+                  <button
+                    className="icon-button"
+                    aria-label="Μετονομασία σελίδας"
+                    title="Μετονομασία"
+                    disabled={busy}
+                    onClick={() => setRenaming({ id: p.page_id, name: p.custom_name || p.name || "" })}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button className="icon-button" aria-label="Αφαίρεση σελίδας" disabled={busy} onClick={() => run(() => onMapPage(p.page_id, null))}>
+                    <X size={14} />
+                  </button>
+                </li>
+              ),
+            )}
           </ul>
           {meta.pages.length === 0 ? (
             <p className="meta-note">Οι σελίδες εμφανίζονται μετά τον πρώτο συγχρονισμό.</p>
@@ -420,7 +467,7 @@ export function BusinessMetaPanel({
                   <optgroup label="Χωρίς πελάτη">
                     {freePages.map((p) => (
                       <option key={p.page_id} value={p.page_id}>
-                        {pageName(p)}
+                        {pageLabel(p, ads)}
                       </option>
                     ))}
                   </optgroup>
@@ -429,7 +476,7 @@ export function BusinessMetaPanel({
                   <optgroup label="Σε άλλον πελάτη (θα μεταφερθεί)">
                     {otherPages.map((p) => (
                       <option key={p.page_id} value={p.page_id}>
-                        {pageName(p)}
+                        {pageLabel(p, ads)}
                       </option>
                     ))}
                   </optgroup>

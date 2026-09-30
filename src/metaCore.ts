@@ -31,10 +31,24 @@ export interface MetaAd {
 export interface MetaPage {
   page_id: string;
   name: string | null;
+  custom_name?: string | null;
   business_id: string | null;
 }
+/** The name shown for a Page: the user's own name, then Meta's name, then the Page id. */
 export function pageName(p: MetaPage | undefined, id?: string | null): string {
-  return p?.name || (id || p?.page_id ? `Σελίδα ${id || p?.page_id}` : "Άγνωστη σελίδα");
+  return p?.custom_name || p?.name || (id || p?.page_id ? `Σελίδα ${id || p?.page_id}` : "Άγνωστη σελίδα");
+}
+/** What helps recognise a Page without a name: how many ads it has and its latest campaign. */
+export function pageHint(pageId: string, ads: MetaAd[]): { count: number; campaign: string | null } {
+  const own = ads.filter((a) => a.page_id === pageId);
+  const latest = [...own].sort((a, b) => (b.created_time || "").localeCompare(a.created_time || ""))[0];
+  return { count: own.length, campaign: latest ? latest.campaign_name || latest.name : null };
+}
+/** Label for a Page in a list: its name, or its id plus its latest campaign. */
+export function pageLabel(p: MetaPage, ads: MetaAd[]): string {
+  if (p.custom_name || p.name) return pageName(p);
+  const h = pageHint(p.page_id, ads);
+  return h.campaign ? `${pageName(p)} · «${h.campaign}»` : pageName(p);
 }
 export interface MetaLink {
   id: string;

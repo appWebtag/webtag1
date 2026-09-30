@@ -22,6 +22,9 @@ const APP_SECRET = Deno.env.get("META_APP_SECRET")?.trim() || "";
 const INITIAL_DAYS = 180; // first sync
 const RECHECK_DAYS = 28; // later syncs re-read the last 28 days (late conversions)
 const FINAL_AFTER_DAYS = 28; // a promotion's totals stop changing 28 days after it ends
+const WINDOW_DAYS = 14; // daily results are asked for in pieces of at most 14 days
+const TIME_BUDGET_MS = 105_000; // stay well inside the Edge Function time limit
+let deadline = Date.now() + TIME_BUDGET_MS;
 const BASE_FIELDS = ["spend", "impressions", "reach", "clicks", "inline_link_clicks", "actions"];
 
 const cors = {
@@ -35,6 +38,9 @@ const json = (body: unknown, status = 200) =>
 class MetaError extends Error {
   constructor(message: string, public code?: number, public subcode?: number, public reconnect = false) {
     super(message);
+  }
+  get tooMuch() {
+    return tooMuchData({ code: this.code, message: this.message });
   }
 }
 
@@ -61,13 +67,20 @@ async function metaGet(pathOrUrl: string, params: Record<string, string> = {}): 
     const e = body.error || {};
     const code = Number(e.code), sub = Number(e.error_subcode);
     const reconnect = code === 190 || code === 102 || code === 200 || code === 10 || (code >= 200 && code < 300) || [458, 459, 460, 463, 464, 467].includes(sub);
-    const throttled = [4, 17, 32, 613, 80000, 80004].includes(code);
+    const throttled = [4, 17, 32, 613, 80000, 80004].includes(code) || (e.is_transient === true && !tooMuchData(e));
     if (throttled && attempt < 2) {
       await new Promise((r) => setTimeout(r, 4000 * (attempt + 1)));
       continue;
     }
     throw new MetaError(String(e.message || "Meta HTTP " + res.status), code, sub, reconnect);
   }
+}
+
+// Meta's answer when one request asks for too much at once.
+function tooMuchData(e: any): boolean {
+  const code = Number(e?.code);
+  const msg = String(e?.message || "").toLowerCase();
+  return code === 1 || code === 2 || msg.includes("reduce the amount of data") || msg.includes("unknown error");
 }
 
 async function metaAll(path: string, params: Record<string, string>): Promise<any[]> {
@@ -167,6 +180,31 @@ async function listAds(act: string): Promise<any[]> {
   }
 }
 
+// Names of the Pages: first the Pages this ad account can promote (works with ads_read),
+// then a direct lookup for any still missing. Names are optional: failures are ignored.
+async function pageNames(act: string, pageIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const wanted = new Set(pageIds);
+  try {
+    for (const p of await metaAll(act + "/promote_pages", { fields: "id,name" }))
+      if (p?.id && p?.name && wanted.has(String(p.id))) out.set(String(p.id), String(p.name));
+  } catch (_e) { /* not available for this token */ }
+  for (const ids of chunk(pageIds.filter((id) => !out.has(id)), 50)) {
+    const names = await metaGet("", { ids: ids.join(","), fields: "name" }).catch(() => null);
+    if (names) {
+      for (const [id, page] of Object.entries(names))
+        if ((page as any)?.name) out.set(id, String((page as any).name));
+    } else {
+      // One inaccessible Page makes the whole batch fail: ask the first ones one by one.
+      for (const id of ids.slice(0, 10)) {
+        const page = await metaGet(id, { fields: "name" }).catch(() => null);
+        if (page?.name) out.set(id, String(page.name));
+      }
+    }
+  }
+  return out;
+}
+
 // One ad account: account info, ads, Pages, daily results. Returns counts.
 async function syncAccount(db: SupabaseClient, userId: string, account: any, now: string) {
   const act = account.ad_account_id as string;
@@ -176,7 +214,7 @@ async function syncAccount(db: SupabaseClient, userId: string, account: any, now
     name: info.name ?? null, currency: info.currency ?? null, timezone_name: tz, account_status: info.account_status ?? null,
   }).eq("user_id", userId).eq("ad_account_id", act);
 
-  // 1) Ads (new ones appear as "new" for the user to assign — nothing is assigned automatically).
+  // 1) Ads (new ones appear as "new"; ads of a Page linked to a client are assigned after the sync).
   const ads = await listAds(act);
   const rows = ads.map((a) => adRow(userId, act, a, now));
   for (const part of chunk(rows, 500)) {
@@ -191,29 +229,27 @@ async function syncAccount(db: SupabaseClient, userId: string, account: any, now
       { onConflict: "user_id,page_id", ignoreDuplicates: true },
     );
     if (error) throw error;
-    for (const ids of chunk(pageIds, 50)) {
-      const names = await metaGet("", { ids: ids.join(","), fields: "name" }).catch(() => ({}));
-      for (const [id, page] of Object.entries(names || {}))
-        if ((page as any)?.name) await db.from("meta_pages").update({ name: (page as any).name }).eq("user_id", userId).eq("page_id", id);
-    }
+    const found = await pageNames(act, pageIds);
+    for (const [id, name] of found) await db.from("meta_pages").update({ name }).eq("user_id", userId).eq("page_id", id);
   }
 
-  // 2) Daily results per ad (first sync: 180 days; later: the last 28 days again, for late conversions).
+  // 2) Daily results per ad, in pieces: the last 28 days again every time (late conversions),
+  // then older history backwards until 180 days are loaded — continuing in the next sync if needed.
   const today = dayIn(tz);
-  const since = addDays(today, -(account.last_success_at ? RECHECK_DAYS : INITIAL_DAYS));
-  const daily = await insights(act + "/insights", {
-    level: "ad", time_increment: "1", use_unified_attribution_setting: "true",
-    time_range: JSON.stringify({ since, until: today }),
-  }, ["ad_id", "date_start"]);
-  const dailyRows = daily.rows.filter((r) => r.ad_id && r.date_start).map((r) => ({
-    user_id: userId, ad_id: String(r.ad_id), date: r.date_start,
-    currency: r.account_currency || info.currency || "EUR",
-    ...metrics(r, daily.unavailable), fetched_at: now,
-  }));
-  for (const part of chunk(dailyRows, 500)) {
-    const { error } = await db.from("meta_insights_daily").upsert(part, { onConflict: "user_id,ad_id,date" });
-    if (error) throw error;
+  const target = addDays(today, -INITIAL_DAYS);
+  const recentFrom = addDays(today, -RECHECK_DAYS);
+  const currency = info.currency || "EUR";
+  const dailyRows: { ad_id: string }[] = [];
+  dailyRows.push(...(await loadDaily(db, userId, act, recentFrom, today, currency, now)));
+  let historyFrom: string = account.history_from || (account.last_success_at ? target : recentFrom);
+  let complete = historyFrom <= target;
+  while (!complete && Date.now() < deadline) {
+    const from = addDays(historyFrom, -WINDOW_DAYS) < target ? target : addDays(historyFrom, -WINDOW_DAYS);
+    dailyRows.push(...(await loadDaily(db, userId, act, from, addDays(historyFrom, -1), currency, now)));
+    historyFrom = from;
+    complete = historyFrom <= target;
   }
+  await db.from("meta_accounts").update({ history_from: historyFrom }).eq("user_id", userId).eq("ad_account_id", act);
   // Ads that had results but are not in the ads list (archived/deleted) — fetch their names once.
   const known = new Set(rows.map((r) => r.ad_id));
   const { data: stored } = await db.from("meta_ads").select("ad_id").eq("user_id", userId);
@@ -224,7 +260,47 @@ async function syncAccount(db: SupabaseClient, userId: string, account: any, now
     const extra = Object.values(found || {}).map((a: any) => adRow(userId, act, a, now));
     if (extra.length) await db.from("meta_ads").upsert(extra, { onConflict: "user_id,ad_id" });
   }
-  return { ads: rows.length, days: dailyRows.length, today, currency: info.currency ?? null };
+  return { ads: rows.length, days: dailyRows.length, today, currency: info.currency ?? null, complete, historyFrom };
+}
+
+// Daily results of one account for [since, until], asked in windows of up to 14 days,
+// newest first; a window Meta finds too big is split in half (down to one day).
+async function loadDaily(db: SupabaseClient, userId: string, act: string, since: string, until: string, currency: string, now: string) {
+  const saved: { ad_id: string }[] = [];
+  const windows: [string, string][] = [];
+  for (let end = until; end >= since; end = addDays(end, -WINDOW_DAYS)) {
+    const start = addDays(end, -(WINDOW_DAYS - 1));
+    windows.push([start < since ? since : start, end]);
+  }
+  while (windows.length) {
+    const [from, to] = windows.shift()!;
+    let daily;
+    try {
+      daily = await insights(act + "/insights", {
+        level: "ad", time_increment: "1", use_unified_attribution_setting: "true",
+        time_range: JSON.stringify({ since: from, until: to }),
+      }, ["ad_id", "date_start"]);
+    } catch (e) {
+      if (e instanceof MetaError && e.tooMuch && from < to) {
+        const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000);
+        const mid = addDays(from, Math.floor(days / 2));
+        windows.unshift([addDays(mid, 1), to], [from, mid]);
+        continue;
+      }
+      throw e;
+    }
+    const rows = daily.rows.filter((r) => r.ad_id && r.date_start).map((r) => ({
+      user_id: userId, ad_id: String(r.ad_id), date: r.date_start,
+      currency: r.account_currency || currency,
+      ...metrics(r, daily.unavailable), fetched_at: now,
+    }));
+    for (const part of chunk(rows, 500)) {
+      const { error } = await db.from("meta_insights_daily").upsert(part, { onConflict: "user_id,ad_id,date" });
+      if (error) throw error;
+    }
+    saved.push(...rows);
+  }
+  return saved;
 }
 
 function addActions(a: Record<string, number> | null, b: Record<string, number> | null) {
@@ -335,8 +411,10 @@ export async function syncUser(db: SupabaseClient, userId: string, trigger: "man
   const now = new Date().toISOString();
   await db.from("meta_accounts").update({ sync_status: "running", last_attempt_at: now }).eq("user_id", userId);
 
+  deadline = Date.now() + TIME_BUDGET_MS;
   let ads = 0, days = 0, promotions = 0;
   const problems: string[] = [];
+  const notes: string[] = [];
   let reconnect = false;
   let today = dayIn("Europe/Athens");
   const okAccounts: string[] = [];
@@ -348,6 +426,7 @@ export async function syncUser(db: SupabaseClient, userId: string, trigger: "man
       ads += r.ads;
       days += r.days;
       today = r.today;
+      if (!r.complete) notes.push(account.ad_account_id + ": ιστορικό έως " + r.historyFrom + ", συνεχίζει στον επόμενο συγχρονισμό");
       okAccounts.push(account.ad_account_id);
       await db.from("meta_accounts").update({ sync_status: "ok", last_success_at: new Date().toISOString(), last_error: null })
         .eq("user_id", userId).eq("ad_account_id", account.ad_account_id);
@@ -372,7 +451,7 @@ export async function syncUser(db: SupabaseClient, userId: string, trigger: "man
   }
 
   const status = problems.length ? (reconnect ? "needs_reconnect" : "error") : "ok";
-  const message = problems.length ? problems.join(" | ").slice(0, 1000) : null;
+  const message = problems.length || notes.length ? [...problems, ...notes].join(" | ").slice(0, 1000) : null;
   await db.from("meta_sync_runs").update({
     status, finished_at: new Date().toISOString(), ads_seen: ads, days_saved: days, promotions_updated: promotions, message,
   }).eq("id", run?.id);

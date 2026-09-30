@@ -26,7 +26,11 @@ export async function loadMeta(userId: string): Promise<MetaData> {
   ]);
   for (const r of [account, ads, links, results, runs]) if (r.error) throw r.error;
   // Pages are optional: if that table is not there yet, the rest still works.
-  const pages = await supabase.from("meta_pages").select("page_id,name,business_id").eq("user_id", userId);
+  let pages: { data: unknown[] | null; error: unknown } = await supabase
+    .from("meta_pages")
+    .select("page_id,name,custom_name,business_id")
+    .eq("user_id", userId);
+  if (pages.error) pages = await supabase.from("meta_pages").select("page_id,name,business_id").eq("user_id", userId);
   return {
     pages: pages.error ? [] : ((pages.data || []) as MetaPage[]),
     accounts: (account.data || []) as MetaAccount[],
@@ -108,6 +112,17 @@ export async function mapPage(userId: string, pageId: string, businessId: string
   const { error } = await supabase
     .from("meta_pages")
     .update({ business_id: businessId })
+    .eq("user_id", userId)
+    .eq("page_id", pageId);
+  if (error) throw error;
+}
+/** The user's own name for a Page (empty = use Meta's name / the id). */
+export async function renamePage(userId: string, pageId: string, name: string) {
+  if (!supabase) throw new Error("Not configured");
+  const clean = name.trim().slice(0, 120);
+  const { error } = await supabase
+    .from("meta_pages")
+    .update({ custom_name: clean || null })
     .eq("user_id", userId)
     .eq("page_id", pageId);
   if (error) throw error;

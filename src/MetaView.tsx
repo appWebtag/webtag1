@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, CircleCheck, Link2, RefreshCw, EyeOff, Plus, Unplug } from "lucide-react";
+import { CircleAlert, CircleCheck, Link2, RefreshCw, EyeOff, Pencil, Plus, Unplug } from "lucide-react";
 import type { Business } from "./domain";
 import {
   dateTimeLabel,
   metaStatus,
   objectiveLabel,
+  pageHint,
   pageName,
   suggestBusiness,
   type MetaAd,
@@ -43,6 +44,8 @@ export default function MetaView({
   onRemoveAccount,
   onSync,
   onReview,
+  onMapPage,
+  onRenamePage,
 }: {
   meta: MetaData;
   metaError: string;
@@ -53,7 +56,11 @@ export default function MetaView({
   onRemoveAccount: (adAccountId: string) => Promise<void>;
   onSync: () => Promise<void>;
   onReview: (adIds: string[], businessId: string | null) => Promise<void>;
+  onMapPage: (pageId: string, businessId: string | null) => Promise<void>;
+  onRenamePage: (pageId: string, name: string) => Promise<void>;
 }) {
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const [showMappedPages, setShowMappedPages] = useState(false);
   const [status, setStatus] = useState<StatusReply | null>(null);
   const [statusError, setStatusError] = useState("");
   const [manualId, setManualId] = useState("");
@@ -83,6 +90,12 @@ export default function MetaView({
   const available = (status?.accounts || []).filter((a) => !connected.has(a.id));
   const pending = groupByCampaign(currentAds.filter((a) => a.review_state === "new"));
   const assigned = groupByCampaign(currentAds.filter((a) => a.review_state !== "new"));
+  const pageRows = meta.pages
+    .map((p) => ({ page: p, hint: pageHint(p.page_id, currentAds) }))
+    .filter((r) => r.hint.count > 0 || r.page.business_id)
+    .sort((a, b) => b.hint.count - a.hint.count);
+  const unmappedPages = pageRows.filter((r) => !r.page.business_id);
+  const visiblePages = showMappedPages ? pageRows : unmappedPages;
   const businessName = (id: string | null) => businesses.find((b) => b.id === id)?.name || "—";
 
   const run = async (fn: () => Promise<void>) => {
@@ -254,6 +267,98 @@ export default function MetaView({
         </div>
       </section>
 
+      {accounts.length > 0 && pageRows.length > 0 && (
+        <section className="panel meta-pages-panel">
+          <div className="section-heading">
+            <div>
+              <h2>
+                Σελίδες Facebook <span className="count">{unmappedPages.length} χωρίς πελάτη</span>
+              </h2>
+              <p>
+                Διάλεξε σε ποιον πελάτη ανήκει κάθε σελίδα μία φορά: όλες οι καμπάνιες της, και οι νέες σε κάθε συγχρονισμό, πηγαίνουν
+                αυτόματα σε εκείνον τον πελάτη. Με το μολύβι δίνεις όνομα σε μια σελίδα που φαίνεται με αριθμό.
+              </p>
+            </div>
+            <button className="text-action" onClick={() => setShowMappedPages((v) => !v)}>
+              {showMappedPages ? "Μόνο χωρίς πελάτη" : `Όλες οι σελίδες (${pageRows.length})`}
+            </button>
+          </div>
+          {visiblePages.length === 0 ? (
+            <p className="meta-empty">Όλες οι σελίδες έχουν πελάτη.</p>
+          ) : (
+            <ul className="meta-review-list compact">
+              {visiblePages.map(({ page: p, hint }) => (
+                <li key={p.page_id}>
+                  <div className="meta-review-main">
+                    {renaming?.id === p.page_id ? (
+                      <form
+                        className="meta-rename"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          run(async () => {
+                            await onRenamePage(p.page_id, renaming.name);
+                            setRenaming(null);
+                          });
+                        }}
+                      >
+                        <input
+                          autoFocus
+                          aria-label="Όνομα σελίδας"
+                          maxLength={120}
+                          placeholder={p.name || "Όνομα σελίδας"}
+                          value={renaming.name}
+                          onChange={(e) => setRenaming({ id: p.page_id, name: e.target.value })}
+                        />
+                        <button className="button primary small" disabled={busy}>
+                          Αποθήκευση
+                        </button>
+                        <button type="button" className="button secondary small" onClick={() => setRenaming(null)}>
+                          Άκυρο
+                        </button>
+                      </form>
+                    ) : (
+                      <strong>
+                        {pageName(p)}{" "}
+                        <button
+                          className="icon-button"
+                          aria-label={`Μετονομασία ${pageName(p)}`}
+                          title="Μετονομασία"
+                          disabled={busy}
+                          onClick={() => setRenaming({ id: p.page_id, name: p.custom_name || p.name || "" })}
+                        >
+                          <Pencil size={13} />
+                        </button>
+                      </strong>
+                    )}
+                    <span>
+                      {hint.count} {hint.count === 1 ? "διαφήμιση" : "διαφημίσεις"}
+                      {hint.campaign && <> · τελευταία καμπάνια: «{hint.campaign}»</>}
+                    </span>
+                  </div>
+                  <div className="meta-review-actions">
+                    <select
+                      aria-label={`Πελάτης για ${pageName(p)}`}
+                      value={p.business_id || ""}
+                      disabled={busy}
+                      onChange={(e) => run(() => onMapPage(p.page_id, e.target.value || null))}
+                    >
+                      <option value="">Χωρίς πελάτη</option>
+                      {[...businesses]
+                        .sort((a, b) => a.name.localeCompare(b.name, "el"))
+                        .map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
       {accounts.length > 0 && (
         <section className="panel">
           <div className="section-heading">
@@ -261,7 +366,7 @@ export default function MetaView({
               <h2>
                 Νέες διαφημίσεις προς αντιστοίχιση <span className="count">{pending.reduce((n, g) => n + g.ads.length, 0)}</span>
               </h2>
-              <p>Διάλεξε σε ποιον πελάτη ανήκει κάθε καμπάνια. Τίποτα δεν αντιστοιχίζεται χωρίς την επιβεβαίωσή σου.</p>
+              <p>Καμπάνιες από σελίδες που δεν έχουν ακόμη πελάτη. Αντιστοίχισε τη σελίδα από πάνω για να πηγαίνουν αυτόματα, ή διάλεξε πελάτη εδώ για μία καμπάνια.</p>
             </div>
           </div>
           {pending.length === 0 ? (

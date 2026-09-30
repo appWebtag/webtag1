@@ -102,6 +102,7 @@ globalThis.fetch = (async (input: string | URL) => {
     if (filtering[0].value.sort().join() !== "11,12") throw new Error("wrong ads " + filtering[0].value);
     return ok({ data: [{ spend: "7.50", impressions: "1300", clicks: "45", inline_link_clicks: "22", account_currency: "EUR" }] });
   }
+  if (path === "act_1/promote_pages") return ok({ data: [{ id: "777", name: "Kafe 777" }, { id: "888", name: "Not in ads" }] });
   if (path === "" && url.searchParams.get("fields") === "name") return ok({ "555": { id: "555", name: "Olive Page" } });
   if (path === "" && url.searchParams.get("ids") === "99") return ok({ "99": { id: "99", name: "Old ad", campaign: { id: "c0", name: "Old" } } });
   throw new Error("unexpected " + url);
@@ -120,7 +121,7 @@ Deno.test("sync writes ads, daily rows, promotion totals without duplicates", as
       { user_id: U, id: "p2", starts_on: "2026-09-15", ends_on: "2026-10-30", published_on: null, status: "scheduled" },
     ],
     meta_promotion_results: [{ user_id: U, promotion_id: "p-old", fetched_at: "2026-01-01", until: "2026-01-01" }],
-    meta_pages: [{ user_id: U, page_id: "777", name: null, business_id: "b7" }],
+    meta_pages: [{ user_id: U, page_id: "777", name: null, custom_name: "Δικό μου όνομα", business_id: "b7" }],
   };
   const db = fakeDb(tables);
   const r1 = await syncUser(db, U, "manual");
@@ -136,6 +137,10 @@ Deno.test("sync writes ads, daily rows, promotion totals without duplicates", as
   const pages = tables.meta_pages;
   if (pages.find((p) => p.page_id === "555")?.name !== "Olive Page" || pages.find((p) => p.page_id === "777")?.business_id !== "b7") throw new Error(JSON.stringify(pages));
   if (!ads.find((a) => a.ad_id === "99" && a.name === "Old ad")) throw new Error("archived ad not fetched");
+  // Page names: from the Pages the account can promote, then by id; the user's own name is kept
+  const p777 = pages.find((p) => p.page_id === "777")!;
+  if (p777.name !== "Kafe 777" || p777.custom_name !== "Δικό μου όνομα") throw new Error("page names " + JSON.stringify(p777));
+  if (pages.some((p) => p.page_id === "888")) throw new Error("page without ads added");
   // daily rows: reach dropped -> null (unknown), actions absent -> {}
   const d11 = tables.meta_insights_daily.find((x) => x.ad_id === "11")!;
   if (d11.reach !== null || d11.spend !== 5.5 || d11.actions["onsite_conversion.messaging_conversation_started_7d"] !== 3) throw new Error(JSON.stringify(d11));
@@ -204,4 +209,45 @@ Deno.test("several ad accounts: results are added, reach is not, a broken accoun
   if (res.spend !== 10.5 || res.impressions !== 1400 || res.reach !== null || !res.unavailable.includes("reach")) throw new Error(JSON.stringify(res));
   if (res.actions.lead !== 1 || res.ad_count !== 3) throw new Error(JSON.stringify(res));
   if (tables.meta_ads.find((a) => a.ad_id === "21")?.account_id !== "act_2") throw new Error("account of ad");
+});
+
+Deno.test("a big account: Meta refuses large date ranges, the sync splits them and loads all 180 days", async () => {
+  const base = globalThis.fetch;
+  const asked: string[] = [];
+  globalThis.fetch = (async (input: string | URL) => {
+    const url = new URL(String(input));
+    const path = url.pathname.replace(/^\/v\d+\.\d+\//, "");
+    const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    if (path === "act_4") return ok({ name: "Big", currency: "EUR", timezone_name: "Europe/Athens" });
+    if (path === "act_4/ads") return ok({ data: [{ id: "41", name: "Big ad", campaign: { id: "c41", name: "Big" } }] });
+    if (path === "act_4/insights") {
+      const tr = JSON.parse(url.searchParams.get("time_range")!);
+      const days = Math.round((Date.parse(tr.until) - Date.parse(tr.since)) / 86400000) + 1;
+      asked.push(tr.since + ".." + tr.until);
+      if (days > 7) return new Response(JSON.stringify({ error: { code: 1, message: "An unknown error occurred", is_transient: true } }), { status: 500 });
+      const rows = [];
+      for (let i = 0; i < days; i++) {
+        const d = new Date(tr.since + "T12:00:00Z");
+        d.setUTCDate(d.getUTCDate() + i);
+        rows.push({ ad_id: "41", date_start: d.toISOString().slice(0, 10), spend: "1", impressions: "10", clicks: "1", inline_link_clicks: "1", account_currency: "EUR" });
+      }
+      return ok({ data: rows });
+    }
+    return base(input);
+  }) as typeof fetch;
+  const U = "u4";
+  const tables: Record<string, Row[]> = {
+    meta_accounts: [{ user_id: U, ad_account_id: "act_4", sync_status: "pending", last_success_at: null, history_from: null }],
+    meta_sync_runs: [], meta_ads: [], meta_insights_daily: [], meta_pages: [],
+    promotion_meta_links: [], promotions: [], meta_promotion_results: [],
+  };
+  const r = await syncUser(fakeDb(tables), U, "manual");
+  globalThis.fetch = base;
+  if (r.status !== "ok") throw new Error(JSON.stringify(r));
+  const days = new Set(tables.meta_insights_daily.map((d) => d.date));
+  if (days.size !== 181) throw new Error("expected 181 days (180 + today), got " + days.size);
+  if (tables.meta_insights_daily.length !== 181) throw new Error("duplicates: " + tables.meta_insights_daily.length);
+  const acc = tables.meta_accounts[0];
+  if (acc.sync_status !== "ok" || !acc.history_from) throw new Error(JSON.stringify(acc));
+  if (!asked.some((x) => x.length) || asked.length < 26) throw new Error("expected many small requests, got " + asked.length);
 });

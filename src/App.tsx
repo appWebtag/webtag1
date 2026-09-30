@@ -51,6 +51,7 @@ import {
   assignAds,
   emptyMeta,
   mapPage,
+  renamePage,
   loadMeta,
   metaSync,
   removeLink,
@@ -356,6 +357,33 @@ export default function App() {
     setMeta(update);
     return Promise.resolve();
   };
+  // Linking a Page to a client: its waiting ads go to that client now, and new ones automatically.
+  const onMapPage = (pageId: string, businessId: string | null) => {
+    const page = meta.pages.find((p) => p.page_id === pageId);
+    const moving = meta.ads.filter(
+      (a) => a.page_id === pageId && (a.review_state === "new" || (page?.business_id && a.business_id === page.business_id)),
+    );
+    const campaigns = new Set(moving.map((a) => a.campaign_id || a.ad_id)).size;
+    if (demoMode)
+      return demoOnly((m) => ({
+        ...m,
+        pages: m.pages.map((p) => (p.page_id === pageId ? { ...p, business_id: businessId } : p)),
+        ads: m.ads.map((a) =>
+          businessId && moving.some((x) => x.ad_id === a.ad_id) ? { ...a, business_id: businessId, review_state: "assigned" } : a,
+        ),
+      }));
+    const done = !businessId
+      ? "Η σελίδα αφαιρέθηκε από τον πελάτη."
+      : campaigns
+        ? `Η σελίδα αντιστοιχίστηκε: ${campaigns} ${campaigns === 1 ? "καμπάνια πήγε" : "καμπάνιες πήγαν"} στον πελάτη. Οι νέες θα πηγαίνουν αυτόματα.`
+        : "Η σελίδα αντιστοιχίστηκε. Οι νέες καμπάνιες της θα πηγαίνουν αυτόματα στον πελάτη.";
+    return metaAction(() => mapPage(userId!, pageId, businessId), done);
+  };
+  const onRenamePage = (pageId: string, name: string) =>
+    demoMode
+      ? demoOnly((m) => ({ ...m, pages: m.pages.map((p) => (p.page_id === pageId ? { ...p, custom_name: name.trim() || null } : p)) }))
+      : metaAction(() => renamePage(userId!, pageId, name), "Το όνομα της σελίδας αποθηκεύτηκε.");
+
   const newAdsCount = meta.ads.filter(
     (a) => a.review_state === "new" && meta.accounts.some((x) => x.ad_account_id === a.account_id),
   ).length;
@@ -1144,19 +1172,8 @@ export default function App() {
                       business={activeBusiness}
                       meta={meta}
                       onOpenMeta={() => navigate("meta")}
-                      onMapPage={(pageId, businessId) =>
-                        demoMode
-                          ? demoOnly((m) => ({
-                              ...m,
-                              pages: m.pages.map((p) => (p.page_id === pageId ? { ...p, business_id: businessId } : p)),
-                              ads: m.ads.map((a) =>
-                                businessId && a.page_id === pageId && a.review_state === "new"
-                                  ? { ...a, business_id: businessId, review_state: "assigned" }
-                                  : a,
-                              ),
-                            }))
-                          : metaAction(() => mapPage(userId!, pageId, businessId), "Η σελίδα αντιστοιχίστηκε.")
-                      }
+                      onMapPage={onMapPage}
+                      onRenamePage={onRenamePage}
                       onAssign={(ids, businessId) =>
                         demoMode
                           ? demoOnly((m) => ({
@@ -1218,6 +1235,8 @@ export default function App() {
                         }))
                       : metaAction(() => addAccount(userId!, id), "Ο λογαριασμός προστέθηκε. Πάτα «Συγχρονισμός τώρα».")
                   }
+                  onMapPage={onMapPage}
+                  onRenamePage={onRenamePage}
                   onRemoveAccount={(id) =>
                     demoMode
                       ? demoOnly((m) => ({ ...m, accounts: m.accounts.filter((a) => a.ad_account_id !== id) }))
