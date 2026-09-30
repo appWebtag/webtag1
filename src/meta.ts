@@ -1,5 +1,5 @@
 import { supabase } from "./data";
-import type { MetaAccount, MetaAd, MetaLink, MetaResult, MetaRun, MetaDaily, MetaData, MetaNumbers, MetaPage } from "./metaCore";
+import type { MetaAccount, MetaAd, MetaLink, MetaResult, MetaRun, MetaDaily, MetaData, MetaNumbers, MetaPage, PageMonth } from "./metaCore";
 
 export const emptyMeta: MetaData = { accounts: [], ads: [], links: [], results: [], runs: [], pages: [] };
 
@@ -28,11 +28,30 @@ export async function loadMeta(userId: string): Promise<MetaData> {
   // Pages are optional: if that table is not there yet, the rest still works.
   let pages: { data: unknown[] | null; error: unknown } = await supabase
     .from("meta_pages")
-    .select("page_id,name,custom_name,business_id")
+    .select("page_id,name,custom_name,business_id,insights_status,insights_error,insights_checked_at,instagram_username,followers,instagram_followers")
     .eq("user_id", userId);
+  if (pages.error)
+    pages = await supabase.from("meta_pages").select("page_id,name,custom_name,business_id").eq("user_id", userId);
   if (pages.error) pages = await supabase.from("meta_pages").select("page_id,name,business_id").eq("user_id", userId);
+  // Page statistics are optional too.
+  const stats = await supabase
+    .from("page_insights_monthly")
+    .select("page_id,platform,month,views,reach,engagements,new_followers,followers,fetched_at")
+    .eq("user_id", userId)
+    .order("month");
+  const n = (v: unknown) => (v === null || v === undefined ? null : Number(v));
   return {
     pages: pages.error ? [] : ((pages.data || []) as MetaPage[]),
+    pageStats: stats.error
+      ? []
+      : ((stats.data || []) as PageMonth[]).map((r) => ({
+          ...r,
+          views: n(r.views),
+          reach: n(r.reach),
+          engagements: n(r.engagements),
+          new_followers: n(r.new_followers),
+          followers: n(r.followers),
+        })),
     accounts: (account.data || []) as MetaAccount[],
     ads: (ads.data || []) as MetaAd[],
     links: (links.data || []) as MetaLink[],

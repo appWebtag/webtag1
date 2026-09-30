@@ -11,6 +11,7 @@ const keys: Record<string, string[]> = {
   meta_insights_daily: ["user_id", "ad_id", "date"],
   meta_pages: ["user_id", "page_id"],
   meta_promotion_results: ["promotion_id"],
+  page_insights_monthly: ["user_id", "page_id", "platform", "month"],
 };
 function fakeDb(tables: Record<string, Row[]>) {
   let nextId = 1;
@@ -257,4 +258,74 @@ Deno.test("a big account: Meta refuses large date ranges, the sync splits them a
   const acc = tables.meta_accounts[0];
   if (acc.sync_status !== "ok" || !acc.history_from) throw new Error(JSON.stringify(acc));
   if (!asked.some((x) => x.length) || asked.length < 26) throw new Error("expected many small requests, got " + asked.length);
+});
+
+Deno.test("Page statistics: Facebook and Instagram per month, with the Page token; no access is shown on the Page", async () => {
+  const base = globalThis.fetch;
+  const tokens = new Set<string>();
+  globalThis.fetch = (async (input: string | URL) => {
+    const url = new URL(String(input));
+    const path = url.pathname.replace(/^\/v\d+\.\d+\//, "");
+    const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    const bad = (code: number, message: string) => new Response(JSON.stringify({ error: { code, message } }), { status: 400 });
+    if (!url.searchParams.get("appsecret_proof")) throw new Error("missing appsecret_proof");
+    if (path === "act_9") return ok({ name: "Ads", currency: "EUR", timezone_name: "Europe/Athens" });
+    if (path === "act_9/ads") return ok({ data: [] });
+    if (path === "act_9/insights") return ok({ data: [] });
+    if (path === "444") return bad(10, "(#10) Requires pages_read_engagement permission");
+    if (path === "555")
+      return ok({ id: "555", name: "Olive Page", access_token: "page-token", followers_count: 1200,
+        instagram_business_account: { id: "1784", username: "olive", followers_count: 900 } });
+    if (path === "555/insights") {
+      tokens.add(url.searchParams.get("access_token")!);
+      const metric = url.searchParams.get("metric")!;
+      if (metric.includes("page_follows") && metric.includes(",")) return bad(100, "(#100) The value must be a valid insights metric");
+      if (metric === "page_follows") return bad(100, "(#100) The value must be a valid insights metric");
+      const day = (v: number) => [{ value: v, end_time: "x" }, { value: v, end_time: "y" }];
+      return ok({ data: metric.split(",").map((m) => ({ name: m, period: "day", values: day(m === "page_media_view" ? 50 : m === "page_post_engagements" ? 7 : 2) })) });
+    }
+    if (path === "1784/insights") {
+      tokens.add(url.searchParams.get("access_token")!);
+      if (url.searchParams.get("metric_type") !== "total_value") throw new Error("expected total_value");
+      const since = Number(url.searchParams.get("since")), until = Number(url.searchParams.get("until"));
+      if (until - since > 30 * 86400) throw new Error("more than 30 days asked");
+      const metric = url.searchParams.get("metric")!;
+      if (metric === "follows_and_unfollows")
+        return ok({ data: [{ name: metric, total_value: { breakdowns: [{ results: [{ dimension_values: ["FOLLOWER"], value: 12 }, { dimension_values: ["NON_FOLLOWER"], value: 3 }] }] } }] });
+      return ok({ data: metric.split(",").map((m) => ({ name: m, total_value: { value: m === "views" ? 300 : m === "reach" ? 120 : 40 } })) });
+    }
+    throw new Error("unexpected " + url);
+  }) as typeof fetch;
+  const U = "u9";
+  const tables: Record<string, Row[]> = {
+    meta_accounts: [{ user_id: U, ad_account_id: "act_9", sync_status: "pending", history_from: "2020-01-01" }],
+    meta_sync_runs: [], meta_ads: [], meta_insights_daily: [], promotion_meta_links: [], promotions: [], meta_promotion_results: [],
+    meta_pages: [
+      { user_id: U, page_id: "555", name: null, business_id: "b1" },
+      { user_id: U, page_id: "444", name: null, business_id: "b2" },
+      { user_id: U, page_id: "333", name: null, business_id: null },
+    ],
+    page_insights_monthly: [],
+  };
+  const r = await syncUser(fakeDb(tables), U, "manual");
+  globalThis.fetch = base;
+  if (r.status !== "ok") throw new Error("page statistics must not fail the sync " + JSON.stringify(r));
+  const p555 = tables.meta_pages.find((p) => p.page_id === "555")!;
+  const p444 = tables.meta_pages.find((p) => p.page_id === "444")!;
+  if (p555.name !== "Olive Page" || p555.insights_status !== "ok" || p555.instagram_username !== "olive" || p555.followers !== 1200) throw new Error(JSON.stringify(p555));
+  if (p444.insights_status !== "no_access" || !String(p444.insights_error).includes("pages_read_engagement")) throw new Error(JSON.stringify(p444));
+  const rows = tables.page_insights_monthly;
+  if (rows.some((x) => x.page_id !== "555")) throw new Error("unmapped / no-access Page read");
+  const fb = rows.filter((x) => x.platform === "facebook"), ig = rows.filter((x) => x.platform === "instagram");
+  if (fb.length !== 6 || ig.length !== 6) throw new Error("6 months each " + fb.length + "/" + ig.length);
+  const month = (list: Row[]) => list.sort((a, b) => b.month.localeCompare(a.month))[0];
+  const f = month(fb), i = month(ig);
+  if (f.views !== 100 || f.engagements !== 14 || f.new_followers !== 4 || f.followers !== 1200) throw new Error(JSON.stringify(f));
+  if (i.views === null || i.reach !== 120 || i.new_followers !== 12 || i.followers !== 900) throw new Error(JSON.stringify(i));
+  if ([...tokens].some((t) => t !== "page-token")) throw new Error("statistics must use the Page token");
+  if (JSON.stringify(tables).includes("page-token")) throw new Error("Page token stored");
+  // second sync: finished months are not asked again, no duplicate rows
+  const before = rows.length;
+  await syncUser(fakeDb(tables), U, "daily");
+  if (tables.page_insights_monthly.length !== before) throw new Error("duplicates");
 });

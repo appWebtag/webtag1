@@ -33,6 +33,24 @@ export interface MetaPage {
   name: string | null;
   custom_name?: string | null;
   business_id: string | null;
+  insights_status?: "ok" | "no_access" | null;
+  insights_error?: string | null;
+  insights_checked_at?: string | null;
+  instagram_username?: string | null;
+  followers?: number | null;
+  instagram_followers?: number | null;
+}
+/** Organic statistics of a Page (Facebook) or its Instagram account for one month. */
+export interface PageMonth {
+  page_id: string;
+  platform: "facebook" | "instagram";
+  month: string;
+  views: number | null;
+  reach: number | null;
+  engagements: number | null;
+  new_followers: number | null;
+  followers: number | null;
+  fetched_at: string;
 }
 /** The name shown for a Page: the user's own name, then Meta's name, then the Page id. */
 export function pageName(p: MetaPage | undefined, id?: string | null): string {
@@ -95,6 +113,12 @@ export interface MetaData {
   links: MetaLink[];
   results: MetaResult[];
   runs: MetaRun[];
+  pageStats?: PageMonth[];
+}
+/** Change from the previous value, as a percentage (null when it cannot be computed). */
+export function change(now: number | null, before: number | null): number | null {
+  if (now === null || before === null || before === 0) return null;
+  return ((now - before) / before) * 100;
 }
 // ---------- presentation helpers ----------
 export function money(value: number | null, currency: string | null): string {

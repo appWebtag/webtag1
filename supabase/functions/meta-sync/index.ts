@@ -44,21 +44,24 @@ class MetaError extends Error {
   }
 }
 
-let proofCache: string | null = null;
-async function appsecretProof(): Promise<string | null> {
+const proofCache = new Map<string, string>();
+async function appsecretProof(token = TOKEN): Promise<string | null> {
   if (!APP_SECRET) return null;
-  if (proofCache) return proofCache;
+  const cached = proofCache.get(token);
+  if (cached) return cached;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(APP_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(TOKEN));
-  proofCache = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return proofCache;
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(token));
+  const proof = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  proofCache.set(token, proof);
+  return proof;
 }
 
-async function metaGet(pathOrUrl: string, params: Record<string, string> = {}): Promise<any> {
+// GET from the Graph API. "token" is the system-user token, or a Page token for Page statistics.
+async function metaGet(pathOrUrl: string, params: Record<string, string> = {}, token = TOKEN): Promise<any> {
   const url = pathOrUrl.startsWith("https://") ? new URL(pathOrUrl) : new URL(GRAPH + "/" + pathOrUrl);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  url.searchParams.set("access_token", TOKEN);
-  const proof = await appsecretProof();
+  url.searchParams.set("access_token", token);
+  const proof = await appsecretProof(token);
   if (proof) url.searchParams.set("appsecret_proof", proof);
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, { headers: { Accept: "application/json" } });
@@ -74,6 +77,12 @@ async function metaGet(pathOrUrl: string, params: Record<string, string> = {}): 
     }
     throw new MetaError(String(e.message || "Meta HTTP " + res.status), code, sub, reconnect);
   }
+}
+
+// Error text that is safe to store and show: never a URL with a token in it.
+function errorText(e: unknown, max = 400): string {
+  const raw = e instanceof Error ? e.message : typeof e === "object" && e && "message" in e ? String((e as any).message) : "Άγνωστο σφάλμα";
+  return raw.replace(/(access_token|appsecret_proof)=[^& "']+/g, "$1=***").slice(0, max);
 }
 
 // Meta's answer when one request asks for too much at once.
@@ -401,6 +410,167 @@ async function promotionTotals(db: SupabaseClient, userId: string, connected: st
   return updated;
 }
 
+// 4) Organic statistics of the Pages linked to clients (Facebook Page + its Instagram account),
+// one row per month. Needs the Page to be assigned to the system user and the token to have
+// pages_read_engagement, read_insights, instagram_basic, instagram_manage_insights.
+const INSIGHT_MONTHS = 6;
+const FB_METRICS = ["page_media_view", "page_post_engagements", "page_daily_follows_unique", "page_follows"];
+const monthStart = (iso: string) => iso.slice(0, 7) + "-01";
+function addMonths(month: string, n: number) {
+  const d = new Date(month + "T12:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() + n, 1);
+  return d.toISOString().slice(0, 10);
+}
+const unix = (iso: string) => String(Math.floor(Date.parse(iso + "T00:00:00Z") / 1000));
+
+// Facebook: daily values for the month, added up (followers: the last total of the month).
+async function facebookMonth(pageId: string, pageToken: string, month: string, until: string, bad: Set<string>) {
+  const out: Record<string, number | null> = { views: null, engagements: null, new_followers: null, followers: null };
+  const ask = async (metrics: string[]) =>
+    (await metaGet(pageId + "/insights", { metric: metrics.join(","), period: "day", since: month, until }, pageToken)).data || [];
+  let rows: any[] = [];
+  const wanted = FB_METRICS.filter((m) => !bad.has(m));
+  try {
+    rows = await ask(wanted);
+  } catch (e) {
+    if (!(e instanceof MetaError) || e.code !== 100) throw e;
+    for (const m of wanted) { // find which metric Meta no longer offers
+      try { rows.push(...(await ask([m]))); } catch (e2) { if (e2 instanceof MetaError && e2.code === 100) bad.add(m); else throw e2; }
+    }
+  }
+  for (const r of rows) {
+    const values = (r.values || []).filter((v: any) => typeof v.value === "number");
+    if (!values.length) continue;
+    const sum = values.reduce((n: number, v: any) => n + v.value, 0);
+    if (r.name === "page_media_view") out.views = sum;
+    if (r.name === "page_post_engagements") out.engagements = sum;
+    if (r.name === "page_daily_follows_unique") out.new_followers = sum;
+    if (r.name === "page_follows") out.followers = values[values.length - 1].value;
+  }
+  return out;
+}
+
+// Instagram: totals for the month (Meta allows at most 30 days per request).
+async function instagramMonth(igId: string, pageToken: string, month: string, until: string, bad: Set<string>) {
+  const out: Record<string, number | null> = { views: null, reach: null, engagements: null, new_followers: null };
+  const end30 = addDays(month, 30) < until ? addDays(month, 30) : until;
+  const total = async (metrics: string[], since: string, to: string, extra: Record<string, string> = {}) => {
+    const res = await metaGet(igId + "/insights", {
+      metric: metrics.join(","), period: "day", metric_type: "total_value", since: unix(since), until: unix(to), ...extra,
+    }, pageToken);
+    return (res.data || []) as any[];
+  };
+  const value = (rows: any[], name: string) => {
+    const v = rows.find((r) => r.name === name)?.total_value?.value;
+    return typeof v === "number" ? v : null;
+  };
+  const metrics = ["views", "reach", "total_interactions"].filter((m) => !bad.has(m));
+  let rows: any[] = [];
+  try {
+    rows = await total(metrics, month, end30);
+  } catch (e) {
+    if (!(e instanceof MetaError) || e.code !== 100) throw e;
+    for (const m of metrics) {
+      try { rows.push(...(await total([m], month, end30))); } catch (e2) { if (e2 instanceof MetaError && e2.code === 100) bad.add(m); else throw e2; }
+    }
+  }
+  out.views = value(rows, "views");
+  out.reach = value(rows, "reach"); // people reached in (up to) the first 30 days of the month
+  out.engagements = value(rows, "total_interactions");
+  if (end30 < until) { // day 31: views and interactions can be added
+    const rest = await total(["views", "total_interactions"].filter((m) => !bad.has(m)), end30, until).catch(() => []);
+    const v = value(rest, "views"), i = value(rest, "total_interactions");
+    if (out.views !== null && v !== null) out.views += v;
+    if (out.engagements !== null && i !== null) out.engagements += i;
+  }
+  if (!bad.has("follows_and_unfollows")) {
+    try {
+      const f = await total(["follows_and_unfollows"], month, end30, { breakdown: "follow_type" });
+      const results = f[0]?.total_value?.breakdowns?.[0]?.results || [];
+      const follows = results.find((x: any) => (x.dimension_values || []).includes("FOLLOWER"));
+      if (follows && typeof follows.value === "number") out.new_followers = follows.value;
+    } catch (e) {
+      if (e instanceof MetaError && e.code === 100) bad.add("follows_and_unfollows");
+      else throw e;
+    }
+  }
+  return out;
+}
+
+async function pageStatistics(db: SupabaseClient, userId: string, now: string) {
+  const { data: pages } = await db.from("meta_pages").select("page_id,business_id").eq("user_id", userId).not("business_id", "is", null);
+  if (!pages?.length) return { pages: 0, months: 0, problems: [] as string[] };
+  const { data: stored } = await db.from("page_insights_monthly").select("page_id,platform,month,fetched_at").eq("user_id", userId);
+  const today = dayIn("Europe/Athens");
+  const current = monthStart(today);
+  const tomorrow = addDays(today, 1);
+  const months = Array.from({ length: INSIGHT_MONTHS }, (_, i) => addMonths(current, -i));
+  const bad = new Set<string>();
+  const problems: string[] = [];
+  let saved = 0, reached = 0;
+  // A month is final once it has been read at least 3 days after it ended.
+  const final = (pageId: string, platform: string, month: string) =>
+    (stored || []).some((r) => r.page_id === pageId && r.platform === platform && r.month === month &&
+      r.fetched_at.slice(0, 10) >= addDays(addMonths(month, 1), 3));
+  const work: { page: any; token: string; ig: any; followers: number | null }[] = [];
+  const failed = new Set<string>();
+  for (const page of pages) {
+    if (Date.now() > deadline) break;
+    try {
+      const info = await metaGet(page.page_id, { fields: "name,access_token,followers_count,instagram_business_account{id,username,followers_count}" });
+      if (!info.access_token) throw new MetaError("Δεν υπάρχει πρόσβαση στη σελίδα");
+      const ig = info.instagram_business_account || null;
+      await db.from("meta_pages").update({
+        name: info.name ?? null, insights_status: "ok", insights_error: null, insights_checked_at: now,
+        instagram_id: ig?.id ?? null, instagram_username: ig?.username ?? null,
+        followers: info.followers_count ?? null, instagram_followers: ig?.followers_count ?? null,
+      }).eq("user_id", userId).eq("page_id", page.page_id);
+      work.push({ page, token: info.access_token, ig, followers: info.followers_count ?? null });
+      reached++;
+    } catch (e) {
+      const message = errorText(e, 300);
+      await db.from("meta_pages").update({ insights_status: "no_access", insights_error: message, insights_checked_at: now })
+        .eq("user_id", userId).eq("page_id", page.page_id);
+    }
+  }
+  // Newest months first for every Page, then older history while there is time.
+  for (const pass of [months.slice(0, 2), months.slice(2)]) {
+    for (const w of work) {
+      for (const month of pass) {
+        if (Date.now() > deadline) return { pages: reached, months: saved, problems };
+        const until = addMonths(month, 1) < tomorrow ? addMonths(month, 1) : tomorrow;
+        const platforms: [string, () => Promise<Record<string, number | null>>][] = [
+          ["facebook", () => facebookMonth(w.page.page_id, w.token, month, until, bad)],
+        ];
+        if (w.ig?.id) platforms.push(["instagram", () => instagramMonth(w.ig.id, w.token, month, until, bad)]);
+        for (const [platform, read] of platforms) {
+          const key = w.page.page_id + platform;
+          if (failed.has(key) || final(w.page.page_id, platform, month)) continue;
+          try {
+            const m = await read();
+            if (month === current) {
+              if (platform === "instagram") m.followers = w.ig.followers_count ?? null;
+              else if (m.followers === null) m.followers = w.followers;
+            }
+            const { error } = await db.from("page_insights_monthly").upsert({
+              user_id: userId, page_id: w.page.page_id, platform, month,
+              views: m.views ?? null, reach: m.reach ?? null, engagements: m.engagements ?? null,
+              new_followers: m.new_followers ?? null, followers: m.followers ?? null, fetched_at: now,
+            }, { onConflict: "user_id,page_id,platform,month" });
+            if (error) throw error;
+            saved++;
+          } catch (e) {
+            const message = errorText(e, 200);
+            problems.push("Σελίδα " + w.page.page_id + " (" + platform + "): " + message);
+            failed.add(key); // skip this platform's older months this time
+          }
+        }
+      }
+    }
+  }
+  return { pages: reached, months: saved, problems: [...new Set(problems)].slice(0, 5) };
+}
+
 export async function syncUser(db: SupabaseClient, userId: string, trigger: "manual" | "daily") {
   const { data: accounts, error: accErr } = await db.from("meta_accounts").select("*").eq("user_id", userId);
   if (accErr) throw accErr;
@@ -436,7 +606,7 @@ export async function syncUser(db: SupabaseClient, userId: string, trigger: "man
     } catch (e) {
       const again = e instanceof MetaError && e.reconnect;
       reconnect = reconnect || again;
-      const message = e instanceof Error ? e.message.slice(0, 400) : "Άγνωστο σφάλμα";
+      const message = errorText(e, 400);
       problems.push(account.ad_account_id + ": " + message);
       await db.from("meta_accounts").update({ sync_status: again ? "needs_reconnect" : "error", last_error: message })
         .eq("user_id", userId).eq("ad_account_id", account.ad_account_id);
@@ -454,7 +624,17 @@ export async function syncUser(db: SupabaseClient, userId: string, trigger: "man
     else if (made.data) notes.push("Νέες προωθήσεις από καμπάνιες: " + made.data);
     if (okAccounts.length) promotions = await promotionTotals(db, userId, okAccounts, today, now);
   } catch (e) {
-    problems.push(e instanceof Error ? e.message.slice(0, 400) : "Άγνωστο σφάλμα");
+    problems.push(errorText(e, 400));
+  }
+  // Page statistics are extra: a missing permission is shown on the Page, it does not fail the sync.
+  if (TOKEN) {
+    try {
+      const st = await pageStatistics(db, userId, now);
+      if (st.months) notes.push("Στατιστικά σελίδων: " + st.months + " μήνες σε " + st.pages + " σελίδες");
+      notes.push(...st.problems);
+    } catch (e) {
+      notes.push("Στατιστικά σελίδων: " + (errorText(e, 200)));
+    }
   }
 
   const status = problems.length ? (reconnect ? "needs_reconnect" : "error") : "ok";

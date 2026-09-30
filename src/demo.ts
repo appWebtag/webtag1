@@ -161,11 +161,21 @@ export function demoMeta(): { meta: MetaData; daily: MetaDaily[] } {
         ad("a5", "Brunch Σαββατοκύριακου", "c4", "Brunch promo", "OUTCOME_AWARENESS", null, "new"),
       ],
       pages: [
-        { page_id: "555", name: "Olive & Thyme", business_id: "b1" },
+        { page_id: "555", name: "Olive & Thyme", business_id: "b1", insights_status: "ok", instagram_username: "oliveandthyme.gr", followers: 4820, instagram_followers: 3150 },
         { page_id: "556", name: "Forma Studio Athens", business_id: null },
         { page_id: "557", name: "The Daily Grind", business_id: null },
         { page_id: "104872311998765", name: null, business_id: null },
       ],
+      pageStats: [0, 1, 2, 3, 4, 5].flatMap((i) => {
+        const d = new Date(`${today.slice(0, 7)}-01T12:00:00Z`);
+        d.setUTCMonth(d.getUTCMonth() - (5 - i));
+        const month = d.toISOString().slice(0, 10);
+        const f = [1.0, 1.15, 0.9, 1.3, 1.45, 1.2][i];
+        return [
+          { page_id: "555", platform: "facebook" as const, month, views: Math.round(18400 * f), reach: null, engagements: Math.round(920 * f), new_followers: Math.round(60 * f), followers: 4450 + i * 74, fetched_at: now },
+          { page_id: "555", platform: "instagram" as const, month, views: Math.round(26100 * f), reach: Math.round(7300 * f), engagements: Math.round(1480 * f), new_followers: Math.round(95 * f), followers: 2700 + i * 90, fetched_at: now },
+        ];
+      }),
       links: [
         { id: "l1", promotion_id: "p1", level: "campaign", meta_id: "c1" },
         { id: "l2", promotion_id: "p7", level: "ad", meta_id: "a3" },

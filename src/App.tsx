@@ -44,6 +44,7 @@ import {
 } from "./ui";
 import { CategoryManager, FiltersBar } from "./Filters";
 import { demoData, demoMeta } from "./demo";
+import PageStatsPanel from "./PageStats";
 import MetaView from "./MetaView";
 import { BusinessMetaComparison, BusinessMetaPanel, PromotionMetaPanel } from "./MetaPanels";
 import {
@@ -1192,6 +1193,7 @@ export default function App() {
                           : metaAction(() => assignAds(userId!, ids, businessId))
                       }
                     />
+                    <PageStatsPanel business={activeBusiness} meta={meta} />
                     <BusinessMetaComparison
                       business={activeBusiness}
                       promotions={businessPromotions}
